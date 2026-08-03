@@ -1,44 +1,41 @@
 # Python
 __pycache__/
 *.py[cod]
-*.pyo
 *.pyd
 .Python
 *.egg-info/
 dist/
 build/
-.eggs/
 
 # Jupyter
 .ipynb_checkpoints/
-*.ipynb_checkpoints
 
-# Data files (large binary/NetCDF data — store separately)
+# Large MRMS / NetCDF data files (download via download_mrms_hawaii.py)
+data/MRMS/
+data/GIS/
 *.nc
 *.grib
 *.grib2
 *.grb2
-*.gz
 
-# Shapefiles and GIS data
-*.shp
-*.shx
-*.dbf
-*.prj
-*.cpg
-*.qpj
-*.xml
+# Large simulation output files and oversized geometry parquet (store/share separately)
+Hawaii results/output_sac_*.csv
+Hawaii results/output_uhg_*.csv
+Hawaii results/output/*/output_sac_*.csv
+Hawaii results/output/*/output_uhg_*.csv
+Hawaii results/usgs_basin_geometry_with_source_all.parquet
 
-# Parquet / tabular data
-*.parquet
-*.feather
-*.csv
+# Raw observations and model output from hydro-model-config (large, not needed)
+hydro-model-config/hawaii/hawaii/data/output/
+hydro-model-config/hawaii/hawaii/data/observations/
+hydro-model-config/hawaii/hawaii/pyMARRMot_input/
 
-# Environment and secrets
-.env
-*.env
-.conda/
-conda-meta/
+# Windows shortcut files
+*.lnk
+
+# Unrelated project files
+"CIROH Literature Review.pptx"
+nws-hydro-models/
 
 # OS
 .DS_Store
@@ -54,17 +51,3 @@ desktop.ini
 *.tmp
 tmp/
 temp/
-
-# Non-essential / development scripts (not part of the public tool)
-config.py
-debug_rotation_mean.py
-debug_rotation_plot.py
-example_mrms_download.py
-mrms_processing.ipynb
-verify_availability.py
-verify_hawaii_http.py
-
-# Model outputs (large — do not commit)
-output/
-configurations/sac/*_cal.json
-configurations/unithg/

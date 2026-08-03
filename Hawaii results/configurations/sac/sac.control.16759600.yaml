@@ -1,0 +1,23 @@
+simulation:
+  name: '16759600'
+  output_path: ../data/output/basin_16759600/output_sac_16759600.csv
+  start_date: 2021-04-20 00:00:00
+  end_date: 2026-04-12 00:00:00
+  time_step: 3600
+  time_units: s
+model:
+  name: sac
+  dimensions:
+    type: nhru
+    size: 1
+  parameter_type: json
+  parameters:
+    path: ../configurations/sac/sac_params_16759600.json
+  forcing_type: csv
+  forcing:
+  - name: '16759600'
+    path: ../data/forcing/forcing.sac.16759600.csv
+  initial_conditions:
+    restart: false
+    path: restart.nc
+  output_variables: null

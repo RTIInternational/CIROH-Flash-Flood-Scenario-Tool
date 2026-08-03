@@ -1,0 +1,24 @@
+simulation:
+  name: '16212601'
+  output_path: ../data/output/basin_16212601/output_uhg_16212601.csv
+  start_date: 2021-04-20 00:00:00
+  end_date: 2026-04-12 00:00:00
+  time_step: 3600
+  time_units: s
+model:
+  name: uhg
+  dimensions:
+    type: nhru
+    size: 1
+  parameter_type: json
+  parameters:
+    path: ../configurations/unithg/uhg_params_16212601.json
+  forcing_type: csv
+  forcing:
+  - name: '16212601'
+    path: ../data/forcing/forcing.uhg.16212601.csv
+  initial_conditions:
+    restart: false
+    path: ./restart.nc
+  output_variables:
+  - name: minimal
