@@ -24,18 +24,35 @@ This tool provides a browser-based dashboard that lets analysts:
 ## Repository Structure
 
 ```
-code/
-├── dashboard_mrms.py       # Main dashboard application (Panel + HoloViews)
-├── sac_worker.py           # SAC-SMA + UHG worker (runs in hydro-model env)
-├── config.py               # Shared configuration (paths, domain bounds)
-├── download_mrms_hawaii.py # MRMS QPE data downloader for Hawaii
-├── example_mrms_download.py
-├── verify_availability.py  # Check MRMS data availability
-├── verify_hawaii_http.py
-├── requirements.txt        # Python dependencies
-├── dashboard_test.ipynb    # Notebook launcher for the dashboard
-└── mrms_processing.ipynb   # Exploratory MRMS data processing notebook
+CIROH Flash Flooding/          ← project root
+├── code/
+│   ├── dashboard_mrms.py      # Main dashboard application (Panel + HoloViews)
+│   ├── sac_worker.py          # SAC-SMA + UHG worker (runs in hydro-model env)
+│   ├── dashboard_test.ipynb   # Notebook launcher for the dashboard
+│   ├── download_mrms_hawaii.py
+│   └── requirements.txt
+│
+├── hydro-model-config/hawaii/hawaii/
+│   ├── configurations/
+│   │   ├── sac/               # SAC-SMA control YAML templates
+│   │   └── unithg/            # UHG control YAMLs and parameter JSONs
+│   ├── data/forcing/          # Hourly forcing CSVs (precip + PET per basin)
+│   └── notebooks/             # SAC-SMA calibration workflow notebooks
+│
+└── Hawaii results/
+    ├── configurations/
+    │   ├── sac/               # Calibrated SAC parameters (*_cal.json)
+    │   └── unithg/            # UHG parameter JSONs and control YAMLs
+    ├── output/basin_{id}/     # Calibration results (best_params CSV per basin)
+    ├── usgs_lt500_min2014-2024.parquet        # USGS gauge locations
+    └── usgs_basin_geometry_with_source_all.parquet  # Watershed geometries*
 ```
+
+> **\* Large file note:** `usgs_basin_geometry_with_source_all.parquet` (125 MB) exceeds
+> GitHub's per-file limit and is not tracked in this repository. Obtain it from the
+> project shared drive and place it at the path expected by `HAWAII_RESULTS_DIR` in
+> `dashboard_mrms.py`. Without it the watershed overlay will be disabled but the
+> dashboard will still load and display MRMS QPE.
 
 ---
 
