@@ -59,6 +59,7 @@ from rasterio.transform import from_bounds as rio_from_bounds
 from bokeh.models import (FixedTicker, CustomJSTickFormatter, HoverTool, CustomJSHover,
                            ColumnDataSource, TapTool, Span)
 from bokeh.plotting import figure as bk_figure
+from utils import fetch_all_rating_curves, discharge_to_stage
 
 pn.extension("bokeh")
 hv.extension("bokeh")
@@ -1018,6 +1019,8 @@ class MRMSTransposeDashboard(param.Parameterized):
         self._ws_ts_orig_vals       = []     # original (untransposed) areal mean
         self._sac_pane = pn.pane.Bokeh(
             self._empty_sac_plot(), sizing_mode='stretch_width')
+        self._sac_stage_pane = pn.pane.Bokeh(
+            self._empty_stage_plot(), sizing_mode='stretch_width')
         self._btn_run_sac = pn.widgets.Button(
             name='▶  Run SAC-SMA Model',
             button_type='success', width=180,
@@ -1042,6 +1045,11 @@ class MRMSTransposeDashboard(param.Parameterized):
             width=220,
         )
         self._units_toggle.param.watch(self._on_units_change, "value")
+
+        # ── Rating curves (fetched once at startup for all calibrated basins) ──
+        self._rating_curves = {}
+        if _AVAILABLE_BASIN_IDS:
+            self._rating_curves = fetch_all_rating_curves(_AVAILABLE_BASIN_IDS)
 
     # ── Time-series helpers ───────────────────────────────────────────────
 
@@ -1404,6 +1412,19 @@ class MRMSTransposeDashboard(param.Parameterized):
             title='SAC-SMA Streamflow — click "▶ Run SAC-SMA Model" to compute',
             x_axis_label='Time (UTC)',
             y_axis_label='Streamflow (m³/s)',
+        )
+        p.grid.grid_line_alpha = 0.3
+        return p
+
+    def _empty_stage_plot(self, msg: str = ''):
+        """Placeholder Bokeh figure for stage height output."""
+        title = msg or 'Stage height — run the SAC-SMA model to compute'
+        p = bk_figure(
+            x_axis_type='datetime', height=200,
+            sizing_mode='stretch_width',
+            title=title,
+            x_axis_label='Time (UTC)',
+            y_axis_label='Stage (ft)',
         )
         p.grid.grid_line_alpha = 0.3
         return p
@@ -1951,6 +1972,8 @@ class MRMSTransposeDashboard(param.Parameterized):
     def _qpe_unit(self):  return "in" if self._use_imperial else "mm"
     def _flow_scale(self): return 35.3147 if self._use_imperial else 1.0
     def _flow_unit(self):  return "ft³/s" if self._use_imperial else "m³/s"
+    def _stage_scale(self): return 1.0 if self._use_imperial else 0.3048
+    def _stage_unit(self):  return 'ft' if self._use_imperial else 'm'
 
     def _on_units_change(self, event):
         """Rebuild all displays when the SI/Imperial toggle changes."""
@@ -2018,8 +2041,8 @@ class MRMSTransposeDashboard(param.Parameterized):
         p.add_tools(hover)
         p.legend.click_policy = 'hide'
         p.add_layout(p.legend[0], 'right')
+        boundary_ms = (times_plot[n_event - 1].timestamp() * 1000) if n_ext > 0 else None
         if n_ext > 0:
-            boundary_ms = times_plot[n_event - 1].timestamp() * 1000
             p.add_layout(Span(
                 location=boundary_ms, dimension='height',
                 line_color='#888888', line_dash='dashed',
@@ -2033,6 +2056,56 @@ class MRMSTransposeDashboard(param.Parameterized):
             )
             _dummy_r.visible = False
         self._sac_pane.object = p
+
+        # ── Stage height plot (shared x-axis with flow plot) ──────────────────
+        rating = self._rating_curves.get(d['basin_id'])
+        if rating is not None:
+            ss = self._stage_scale()
+            su = self._stage_unit()
+            max_q_cfs   = float(rating['discharge_cfs'][-1])
+            max_q_disp  = max_q_cfs / (1.0 if self._use_imperial else 1.0)  # cfs either way
+            extrap_note = f' — extrapolated above {max_q_disp:.0f} ft³/s'
+            p_stage = bk_figure(
+                x_axis_type='datetime', height=200,
+                sizing_mode='stretch_width',
+                title=(f'Estimated Stage Height — {d["ws_name"]}'
+                       f' (Gauge {d["basin_id"]}){title_ext}{extrap_note}'),
+                x_axis_label='Time (UTC)',
+                y_axis_label=f'Stage ({su})',
+                x_range=p.x_range,
+            )
+            p_stage.grid.grid_line_alpha = 0.3
+            p_stage.grid.grid_line_color = 'gray'
+            for color, (label, q_raw) in zip(_COLORS, runs.items()):
+                stage_ft   = discharge_to_stage(q_raw, rating)
+                stage_disp = stage_ft * ss
+                src_s = ColumnDataSource(data={
+                    'x':  times_plot,
+                    'y':  list(stage_disp),
+                    'dt': [t.strftime('%Y-%m-%d %H:%Mz') for t in times_plot],
+                })
+                peak_s = float(stage_disp.max())
+                p_stage.line('x', 'y', source=src_s, color=color, line_width=2,
+                             legend_label=f'{label} [Peak: {peak_s:.2f} {su}]')
+                p_stage.scatter('x', 'y', source=src_s, color=color, size=6,
+                                line_color='white', line_width=1)
+            if boundary_ms is not None:
+                p_stage.add_layout(Span(
+                    location=boundary_ms, dimension='height',
+                    line_color='#888888', line_dash='dashed',
+                    line_width=1.5, line_alpha=0.8,
+                ))
+            hover_s = HoverTool(
+                tooltips=[('Time', '@dt'), ('Stage', f'@y{{0.00}} {su}')],
+                mode='mouse')
+            p_stage.add_tools(hover_s)
+            p_stage.legend.click_policy = 'hide'
+            p_stage.add_layout(p_stage.legend[0], 'right')
+            self._sac_stage_pane.object = p_stage
+        else:
+            self._sac_stage_pane.object = self._empty_stage_plot(
+                msg=f'Rating curve not available for gauge {d["basin_id"]}')
+
         spinup_date = d.get('spinup_date')
         date_str = f' | Initial state: {spinup_date}' if spinup_date else ''
         ext_note = f' | +{n_ext}hr zero-precip tail' if n_ext > 0 else ''
@@ -2253,6 +2326,7 @@ class MRMSTransposeDashboard(param.Parameterized):
             ),
             self._sac_progress,
             self._sac_pane,
+            self._sac_stage_pane,
             sizing_mode='stretch_width',
             styles={
                 'background': '#f0f4f8',
