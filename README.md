@@ -96,6 +96,7 @@ Several **absolute paths are hardcoded** in `dashboard_mrms.py` and `sac_worker.
 | `HYDRO_MODEL_CONFIG_DIR` | `dashboard_mrms.py`, `sac_worker.py` | Directory containing SAC/UHG YAML control files and forcing data |
 | `DEFAULT_NC` | `dashboard_mrms.py` | Default MRMS NetCDF file to display on startup |
 | `DEFAULT_COASTLINE_SHP` | `dashboard_mrms.py` | Path to Hawaii coastline shapefile |
+| `DEFAULT_ATLAS14_NC` | `dashboard_mrms.py` | Path to NOAA Atlas 14 Hawaii NetCDF grid (`a14_hawaii.nc`) |
 
 ### SAC-SMA calibration outputs
 
@@ -164,26 +165,44 @@ Open `dashboard_test.ipynb` and run the first cell. The dashboard will launch in
 │  1. Select end date/time and accumulation period         │
 │     (1, 3, 6, 12, 24, or 48 hr), then click Load        │
 │                                                          │
-│  2. Click a point on the LEFT map  → SOURCE             │
+│  2. Choose a Transposition Method                        │
+│     (Simple Translation or AEP Transposition)            │
+│                                                          │
+│  3. Click a point on the LEFT map  → SOURCE             │
 │     Click a point on the RIGHT map → DESTINATION        │
 │                                                          │
-│  3. Optionally adjust rotation (° CW) and fine-tune     │
-│     Δlon / Δlat sliders                                  │
+│  4. Optionally adjust rotation (° CW, Simple mode)      │
+│     and fine-tune Δlon / Δlat sliders                    │
 │                                                          │
-│  4. Click ▶ Transpose — storm shifts to new location    │
+│  5. Click ▶ Transpose — storm shifts to new location    │
 │                                                          │
-│  5. Select a watershed from the dropdown to compute      │
+│  6. Select a watershed from the dropdown to compute      │
 │     areal mean QPE for both the original and transposed  │
 │     grids                                                │
 │                                                          │
-│  6. Click a point on the Watershed Areal Mean chart to   │
+│  7. Click a point on the Watershed Areal Mean chart to   │
 │     select an hour, then use the slider to modify that   │
 │     hour's rainfall (total is conserved)                 │
 │                                                          │
-│  7. Click ▶ Run SAC-SMA Model to simulate streamflow    │
+│  8. Click ▶ Run SAC-SMA Model to simulate streamflow    │
 │     for all active scenarios                             │
 └─────────────────────────────────────────────────────────┘
 ```
+
+### Transposition Methods
+
+The dashboard provides two transposition techniques to modify the spatial precipitation pattern:
+
+1. **Simple Translation**
+   - Directly translates the precipitation field by $(\Delta\text{lon}, \Delta\text{lat})$ without scaling or climatological adjustments.
+   - Source and destination points may be placed anywhere across the grid (land or ocean).
+   - Supports clockwise/counter-clockwise **rotation** (° CW) and fine-tune nudging.
+
+2. **AEP Transposition (Atlas 14)** — *Annual Exceedance Probability*
+   - Full-field climatological transposition where every wet grid cell is scaled independently based on its own local climatology rather than a single point.
+   - Each cell's observed accumulation is converted to its equivalent local recurrence interval (ARI / AEP) via log-linear interpolation and extrapolation across Atlas 14 curves.
+   - That recurrence interval is then evaluated against the Atlas 14 climatology at the cell's transposed target coordinates to calculate the adjusted precipitation amount ($P_{\text{transposed}} = f_{\text{dest}}(\text{AEP}_{\text{src}})$).
+   - Wet cells lacking Atlas 14 land coverage at either the source or destination are blanked (NaN); dry cells remain zero. Rotation is disabled during AEP mode.
 
 ### Map panes
 
@@ -192,7 +211,7 @@ Open `dashboard_test.ipynb` and run the first cell. The dashboard will launch in
 | **Original** | Observed MRMS QPE; click to set source point |
 | **Transposed** | Spatially shifted/rotated QPE; click to set destination point |
 
-Both panes overlay watershed boundaries, USGS gauge locations, and the selected watershed polygon.
+Both panes overlay watershed boundaries, USGS gauge locations, and the selected watershed polygon. Use the **Spatial Plot Display** toggle to switch between showing precipitation depth and the Atlas 14 **Recurrence Interval** (return period in years, from 1 to 200+ yr).
 
 ### Units
 

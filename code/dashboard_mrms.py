@@ -221,9 +221,8 @@ DEFAULT_GAUGE_PARQUET = str(
     HAWAII_RESULTS_DIR / "usgs_lt500_min2014-2024.parquet"
 )
 
-# Atlas 14 precipitation-frequency grid, used for GTF (Geographic Transposition
-# Factor) storm transposition.  Fixed, locally-downloaded file — no on-the-fly
-# retrieval.
+# Atlas 14 precipitation-frequency grid, used for AEP storm transposition.
+# Fixed, locally-downloaded file — no on-the-fly retrieval.
 DEFAULT_ATLAS14_NC = r"D:\Capstone Project\Precip_Grids\Atlas_14\a14_hawaii.nc"
 
 # Dashboard "Period" selector label → matching Atlas14 duration
@@ -497,12 +496,12 @@ def spatial_mean(data, mask):
 
 
 # ---------------------------------------------------------------------------
-# Atlas 14 / GTF (Geographic Transposition Factor) helpers
+# Atlas 14 / AEP (Annual Exceedance Probability) helpers
 # ---------------------------------------------------------------------------
 
 def load_atlas14(path: str):
     """
-    Open the Atlas 14 precipitation-frequency grid (lazy) for GTF transposition.
+    Open the Atlas 14 precipitation-frequency grid (lazy) for AEP transposition.
 
     Returns
     -------
@@ -978,7 +977,7 @@ class MRMSTransposeDashboard(param.Parameterized):
             except Exception as _e:
                 print(f"  [warn] gauges not loaded: {_e}")
 
-        # ── Atlas 14 climatology (for GTF transposition) ───────────────────────────
+        # ── Atlas 14 climatology (for AEP transposition) ───────────────────────────
         self._has_atlas14 = False
         self._a14_ds = self._a14_lons = self._a14_lats = self._a14_land_mask = None
         if atlas14_path:
@@ -990,13 +989,10 @@ class MRMSTransposeDashboard(param.Parameterized):
             except Exception as _e:
                 print(f"  [warn] Atlas 14 not loaded: {_e}")
 
-        # GTF (Geographic Transposition Factor) state
-        self._gtf_enabled        = False
-        self._gtf_mode           = "gtf"  # "gtf" (single-point) or "aep" (full-field)
-        self._gtf_field          = None   # 2-D array, same shape as self.data
-        self._gtf_info           = None   # dict: duration/ari/below_range/storm_value
-        self._gtf_ari_override   = None   # None = auto-select ARI
-        self._gtf_version        = 0      # bumped each recompute; used in cache keys
+        # AEP (Annual Exceedance Probability) transposition state
+        self._aep_enabled        = False
+        self._aep_field          = None   # 2-D array, same shape as self.data
+        self._aep_version        = 0      # bumped each recompute; used in cache keys
         self._a14_duration_cache = {}     # {pd.Timedelta: (precip_allari, ari_values)}
 
         # ── Watershed stream (triggers redraw on dropdown/rotation/fine-tune changes) ──
@@ -1073,31 +1069,21 @@ class MRMSTransposeDashboard(param.Parameterized):
         self._fine_lat_slider.param.watch(self._on_fine_lat_change, "value_throttled")
         self.param.watch(self._on_fine_param_change, ["fine_lon", "fine_lat"])
 
-        # ── GTF (Atlas 14) controls ────────────────────────────────────────
-        self._gtf_toggle = pn.widgets.RadioButtonGroup(
+        # ── Transposition method controls ─────────────────────────────────
+        self._trans_method_toggle = pn.widgets.RadioButtonGroup(
             name="Transposition Method",
-            options=["Simple Translation", "GTF (Atlas 14)", "AEP Transposition (Atlas 14)"],
+            options=["Simple Translation", "AEP Transposition (Atlas 14)"],
             value="Simple Translation",
             button_type="default",
-            width=560,
+            width=360,
             disabled=not self._has_atlas14,
         )
-        self._gtf_toggle.param.watch(self._on_gtf_mode_change, "value")
+        self._trans_method_toggle.param.watch(self._on_trans_method_change, "value")
 
-        _ari_opts = (
-            ["Auto"] + [int(a) for a in self._a14_ds["ARI"].values]
-            if self._has_atlas14 else ["Auto"]
-        )
-        self._gtf_ari_select = pn.widgets.Select(
-            name="ARI (yr)", options=_ari_opts, value="Auto",
-            width=140, visible=False,
-        )
-        self._gtf_ari_select.param.watch(self._on_gtf_ari_change, "value")
-
-        self._gtf_status = pn.pane.Markdown(
-            ("*Select GTF or AEP to transpose using Atlas 14 climatology "
+        self._aep_status = pn.pane.Markdown(
+            ("*Select AEP Transposition to transpose using Atlas 14 climatology "
              "(source point must be on land).*") if self._has_atlas14 else
-            "*Atlas 14 climatology file not found — GTF/AEP methods unavailable.*",
+            "*Atlas 14 climatology file not found — AEP method unavailable.*",
             width=480,
         )
 
@@ -1359,7 +1345,7 @@ class MRMSTransposeDashboard(param.Parameterized):
 
         # Recompute watershed mean (uses accumulated data now)
         self._recompute_trans_mean()
-        self._recompute_gtf_field()
+        self._recompute_aep_field()
         self._stats.object = self._stats_md()
 
         # Redraw spatial maps with accumulated data — increment data_version
@@ -1400,7 +1386,7 @@ class MRMSTransposeDashboard(param.Parameterized):
                 v_dst_orig_list.append(
                     point_value_at(g["lons"], g["lats"], g["data"], dst_lon, dst_lat))
 
-            gd = self._apply_gtf(g["data"])
+            gd = self._apply_aep(g["data"])
             tl, tt, td = transpose_data(
                 g["lons"], g["lats"], gd, total_d_lon, total_d_lat)
             tl, tt, td = rotate_data(
@@ -1478,7 +1464,7 @@ class MRMSTransposeDashboard(param.Parameterized):
         t_ws_mask = None
         if transposed and self._ts_grids:
             ref = self._ts_grids[0]
-            gd_ref = self._apply_gtf(ref["data"])
+            gd_ref = self._apply_aep(ref["data"])
             tl, tt, td = transpose_data(
                 ref["lons"], ref["lats"], gd_ref, total_d_lon, total_d_lat)
             tl, tt, td = rotate_data(
@@ -1491,7 +1477,7 @@ class MRMSTransposeDashboard(param.Parameterized):
             orig_vals.append(v_orig if v_orig is not None else 0.0)
 
             if transposed and t_ws_mask is not None:
-                gd = self._apply_gtf(g["data"])
+                gd = self._apply_aep(g["data"])
                 tl, tt, td = transpose_data(
                     g["lons"], g["lats"], gd, total_d_lon, total_d_lat)
                 tl, tt, td = rotate_data(
@@ -1873,7 +1859,7 @@ class MRMSTransposeDashboard(param.Parameterized):
             None if piv_lon is None else round(piv_lon, 7),
             None if piv_lat is None else round(piv_lat, 7),
             self._ts_grids_version,
-            self._gtf_enabled, self._gtf_version,
+            self._aep_enabled, self._aep_version,
         )
         if key == self._trans_accum_cache_key:
             return self._trans_accum_cache
@@ -1882,7 +1868,7 @@ class MRMSTransposeDashboard(param.Parameterized):
             accum = None
             t_lons_ref = t_lats_ref = None
             for g in self._ts_grids:
-                gd = self._apply_gtf(g["data"])
+                gd = self._apply_aep(g["data"])
                 tl, tt, td = transpose_data(
                     g["lons"], g["lats"], gd, total_d_lon, total_d_lat)
                 tl, tt, td = rotate_data(
@@ -1900,7 +1886,7 @@ class MRMSTransposeDashboard(param.Parameterized):
             result = (t_lons_ref, t_lats_ref, accum)
         else:
             t_lons, t_lats, t_data = transpose_data(
-                self.lons, self.lats, self._apply_gtf(self.data), total_d_lon, total_d_lat)
+                self.lons, self.lats, self._apply_aep(self.data), total_d_lon, total_d_lat)
             t_lons, t_lats, t_data = rotate_data(
                 t_lons, t_lats, t_data, rotation_deg,
                 pivot_lon=piv_lon, pivot_lat=piv_lat)
@@ -1943,7 +1929,7 @@ class MRMSTransposeDashboard(param.Parameterized):
         r_mask = compute_watershed_mask(geom_4326, r_lons, r_lats)
         self._trans_mean = spatial_mean(r_data, r_mask)
 
-    # ── GTF (Atlas 14) helpers ────────────────────────────────────────────
+    # ── Atlas 14 helpers ──────────────────────────────────────────────────
 
     def _is_land(self, lon, lat) -> bool:
         """True if (lon, lat) falls on a valid (non-water) Atlas 14 grid cell."""
@@ -2005,28 +1991,34 @@ class MRMSTransposeDashboard(param.Parameterized):
         ari_field[dry_mask | ~land] = np.nan
         return ari_field
 
-    def _recompute_gtf_field(self):
+    def _recompute_aep_field(self):
         """
-        Recompute the Atlas14-based scaling field (shared by both the
-        single-point GTF and full-field AEP methods).  The result is always
-        a ratio: multiplying it into the precip grid before translating it
-        rescales the storm using local climatology instead of a flat shift.
+        Recompute the Atlas14-based AEP transposition scaling field: every wet
+        cell's own observed magnitude is converted to an equivalent Atlas14
+        return period (AEP) using the climatology AT ITS OWN position, then
+        re-evaluated against the climatology at its *transposed* position to
+        get the new magnitude.  Values outside Atlas14's ARI range are
+        log-linearly extrapolated.
+
+        Cells lacking Atlas14 coverage at either the source or the
+        transposed position are blanked (NaN); dry cells are left at 0 so no
+        rain is introduced where none existed.
         """
-        self._gtf_field = None
-        if not self._gtf_enabled:
+        self._aep_field = None
+        if not self._aep_enabled:
             return
-        self._gtf_version += 1
+        self._aep_version += 1
 
         if not self._has_atlas14:
-            self._gtf_status.object = "*Atlas 14 climatology file not found — unavailable.*"
+            self._aep_status.object = "*Atlas 14 climatology file not found — unavailable.*"
             return
         if self._src_mx is None:
-            self._gtf_status.object = "*Set a source point on land to compute the field.*"
+            self._aep_status.object = "*Set a source point on land to compute AEP transposition.*"
             return
 
         src_lon, src_lat = to_ll(self._src_mx, self._src_my)
         if not self._is_land(src_lon, src_lat):
-            self._gtf_status.object = "⚠️ Source point is over water — unavailable."
+            self._aep_status.object = "⚠️ Source point is over water — unavailable."
             return
 
         ref_data = self._ts_accum_data if self._ts_accum_data is not None else self.data
@@ -2036,91 +2028,12 @@ class MRMSTransposeDashboard(param.Parameterized):
 
         arr_allari, ari_values = self._get_a14_duration_slice(duration)
         if arr_allari is None:
-            self._gtf_status.object = "⚠️ Atlas 14 duration lookup failed."
+            self._aep_status.object = "⚠️ Atlas 14 duration lookup failed."
             return
 
         total_d_lon = self._d_lon + self.fine_lon
         total_d_lat = self._d_lat + self.fine_lat
 
-        if self._gtf_mode == "aep":
-            self._compute_aep_field(ref_data, arr_allari, ari_values,
-                                     total_d_lon, total_d_lat, period_label)
-        else:
-            self._compute_point_gtf_field(ref_data, src_lon, src_lat, arr_allari, ari_values,
-                                           total_d_lon, total_d_lat, period_label)
-
-    def _compute_point_gtf_field(self, ref_data, src_lon, src_lat, arr_allari, ari_values,
-                                  total_d_lon, total_d_lat, period_label):
-        """
-        Single-point GTF: one ARI is selected from the storm's total at the
-        source point, then the whole field is scaled by the ratio of Atlas14
-        precip at each cell's *transposed* position to that single storm
-        total.  Cells with no Atlas14 coverage at the transposed position
-        (open ocean) come out as NaN.
-        """
-        storm_value = point_value_at(self.lons, self.lats, ref_data, src_lon, src_lat)
-        if not np.isfinite(storm_value) or storm_value <= 0:
-            self._gtf_status.object = "⚠️ No precipitation at the source point for the selected period."
-            return
-
-        dlon_a14 = self._a14_lons[1] - self._a14_lons[0]
-        dlat_a14 = self._a14_lats[1] - self._a14_lats[0]
-        ix = int(np.clip(round((src_lon - self._a14_lons[0]) / dlon_a14), 0, len(self._a14_lons) - 1))
-        iy = int(np.clip(round((src_lat - self._a14_lats[0]) / dlat_a14), 0, len(self._a14_lats) - 1))
-
-        amounts = arr_allari[:, iy, ix]
-        below_range = False
-        if self._gtf_ari_override is not None:
-            ari = float(self._gtf_ari_override)
-            k = int(np.argmin(np.abs(ari_values - ari)))
-        else:
-            valid = np.isfinite(amounts)
-            if not valid.any():
-                self._gtf_status.object = "⚠️ Atlas 14 has no data at the source point."
-                return
-            below_range = bool(storm_value < np.nanmin(amounts[valid]))
-            diffs = np.where(valid, np.abs(amounts - storm_value), np.inf)
-            k = int(np.argmin(diffs))
-            ari = float(ari_values[k])
-
-        a14_target = arr_allari[k]   # 2-D (y, x) Atlas14 grid at the chosen ARI/duration
-
-        ix_t = _nearest_indices(self._a14_lons, self.lons + total_d_lon)
-        iy_t = _nearest_indices(self._a14_lats, self.lats + total_d_lat)
-        out_lon = ((self.lons + total_d_lon < self._a14_lons[0] - dlon_a14 / 2) |
-                   (self.lons + total_d_lon > self._a14_lons[-1] + dlon_a14 / 2))
-        out_lat = ((self.lats + total_d_lat < self._a14_lats[0] - dlat_a14 / 2) |
-                   (self.lats + total_d_lat > self._a14_lats[-1] + dlat_a14 / 2))
-
-        sampled = a14_target[np.ix_(iy_t, ix_t)]
-        sampled = np.where(out_lat[:, None] | out_lon[None, :], np.nan, sampled)
-
-        self._gtf_field = sampled.astype(np.float32) / float(storm_value)
-        self._gtf_info = {
-            "mode": "gtf", "duration": period_label, "ari": ari,
-            "below_range": below_range, "storm_value": storm_value,
-        }
-
-        note = " *(below A14 range — using lowest ARI)*" if below_range else ""
-        manual = "manual" if self._gtf_ari_override is not None else "auto"
-        self._gtf_status.object = (
-            f"**GTF active** — duration: {period_label} · ARI: {ari:.0f}-yr ({manual}) · "
-            f"source total: {storm_value:.1f} mm{note}"
-        )
-
-    def _compute_aep_field(self, ref_data, arr_allari, ari_values,
-                            total_d_lon, total_d_lat, period_label):
-        """
-        Full-field AEP transposition: every wet cell's own observed magnitude
-        is converted to an equivalent Atlas14 return period (AEP) using the
-        climatology AT ITS OWN position, then re-evaluated against the
-        climatology at its *transposed* position to get the new magnitude.
-        Values outside Atlas14's ARI range are log-linearly extrapolated.
-
-        Cells lacking Atlas14 coverage at either the source or the
-        transposed position are blanked (NaN); dry cells are left at 0 so no
-        rain is introduced where none existed.
-        """
         ix_src = _nearest_indices(self._a14_lons, self.lons)
         iy_src = _nearest_indices(self._a14_lats, self.lats)
         ix_dst = _nearest_indices(self._a14_lons, self.lons + total_d_lon)
@@ -2129,7 +2042,6 @@ class MRMSTransposeDashboard(param.Parameterized):
         land_src = self._a14_land_mask[iy_src[:, None], ix_src[None, :]]
         land_dst = self._a14_land_mask[iy_dst[:, None], ix_dst[None, :]]
 
-        # (ARI, nlat, nlon) climatology curves at every cell's native / transposed position
         amounts_src = arr_allari[:, iy_src[:, None], ix_src[None, :]].astype(np.float32)
         amounts_dst = arr_allari[:, iy_dst[:, None], ix_dst[None, :]].astype(np.float32)
 
@@ -2139,9 +2051,8 @@ class MRMSTransposeDashboard(param.Parameterized):
 
         log_ari_field = _invert_to_log_ari(ref, amounts_src, log_ari)
         v_new = _forward_from_log_ari(log_ari_field, amounts_dst, log_ari)
-        v_new = np.maximum(v_new, 0.0)   # clip negative extrapolation artifacts
+        v_new = np.maximum(v_new, 0.0)
 
-        # ── Ratio field: dry cells stay dry; wet cells need coverage at both ends ──
         ratio = np.full(ref.shape, np.nan, dtype=np.float32)
         ratio[dry_mask] = 0.0
         valid = (~dry_mask) & land_src & land_dst
@@ -2149,62 +2060,50 @@ class MRMSTransposeDashboard(param.Parameterized):
             ratio_valid = np.where(ref > 0, v_new / ref, 0.0)
         ratio[valid] = ratio_valid[valid]
 
-        self._gtf_field = ratio
+        self._aep_field = ratio
         n_wet = int(np.count_nonzero(~dry_mask))
         n_blocked = int(np.count_nonzero(~dry_mask & ~(land_src & land_dst)))
-        self._gtf_info = {"mode": "aep", "duration": period_label}
-        self._gtf_status.object = (
+        self._aep_status.object = (
             f"**AEP transposition active** — duration: {period_label} · "
             f"{n_blocked}/{max(n_wet, 1)} wet cell(s) blanked (no Atlas14 coverage)"
         )
 
-    def _apply_gtf(self, data):
-        """Multiply by the cached Atlas14 scaling field when active, else pass through."""
-        if not self._gtf_enabled or self._gtf_field is None:
+    def _apply_aep(self, data):
+        """Multiply by the cached AEP scaling field when active, else pass through."""
+        if not self._aep_enabled or self._aep_field is None:
             return data
-        if data.shape != self._gtf_field.shape:
+        if data.shape != self._aep_field.shape:
             return data
-        return data * self._gtf_field
+        return data * self._aep_field
 
-    def _on_gtf_mode_change(self, event):
-        """Switch between simple translation, single-point GTF, and full-field AEP transposition."""
-        self._gtf_mode    = "aep" if event.new == "AEP Transposition (Atlas 14)" else "gtf"
-        self._gtf_enabled = event.new in ("GTF (Atlas 14)", "AEP Transposition (Atlas 14)")
-        self._gtf_ari_select.visible = (event.new == "GTF (Atlas 14)")
+    def _on_trans_method_change(self, event):
+        """Switch between simple translation and full-field AEP transposition."""
+        self._aep_enabled = (event.new == "AEP Transposition (Atlas 14)")
 
-        # Both Atlas14 methods are pure-translation — disable rotation while active
-        self._rot_slider.disabled = self._gtf_enabled
-        if self._gtf_enabled and self.rotation_deg != 0.0:
+        # AEP transposition is pure-translation — disable rotation while active
+        self._rot_slider.disabled = self._aep_enabled
+        if self._aep_enabled and self.rotation_deg != 0.0:
             self._rot_slider.value = 0.0
             self.rotation_deg = 0.0
 
-        # A previously-set source point over water is invalid in either Atlas14 mode
-        if self._gtf_enabled and self._src_mx is not None:
+        # A previously-set source point over water is invalid in AEP mode
+        if self._aep_enabled and self._src_mx is not None:
             slon, slat = to_ll(self._src_mx, self._src_my)
             if not self._is_land(slon, slat):
                 self._src_mx = self._src_my = None
                 self._src_lat_input.value = None
                 self._src_lon_input.value = None
-                self._gtf_status.object = (
+                self._aep_status.object = (
                     "⚠️ **Previous source point was over water and was cleared.** "
                     "Pick a source point on land.")
 
-        self._recompute_gtf_field()
+        self._recompute_aep_field()
         self.data_version += 1
         self._status.object = self._status_md()
         self._stats.object  = self._stats_md()
         self._clear_ws_mod_state()
         if self._ts_grids:
             self._ts_pane.object    = self._build_ts_plot()
-            self._ws_ts_pane.object = self._build_ws_ts_plot()
-
-    def _on_gtf_ari_change(self, event):
-        """Manual ARI override for the GTF field (or 'Auto' for auto-selection)."""
-        self._gtf_ari_override = None if event.new == "Auto" else int(event.new)
-        self._recompute_gtf_field()
-        self.data_version += 1
-        self._stats.object = self._stats_md()
-        if self._ts_grids:
             self._ws_ts_pane.object = self._build_ws_ts_plot()
 
     def _on_display_mode_change(self, event):
@@ -2249,7 +2148,7 @@ class MRMSTransposeDashboard(param.Parameterized):
     def _on_fine_param_change(self, event):
         """Recompute trans mean + stats + ts whenever fine_lon or fine_lat changes."""
         self._recompute_trans_mean()
-        self._recompute_gtf_field()
+        self._recompute_aep_field()
         self._stats.object = self._stats_md()
         if self._src_mx is not None and self._dst_mx is not None:
             self._ts_pane.object = self._build_ts_plot()
@@ -2261,11 +2160,11 @@ class MRMSTransposeDashboard(param.Parameterized):
         lon = self._src_lon_input.value
         if lat is None or lon is None:
             return
-        if self._gtf_enabled and not self._is_land(lon, lat):
-            self._gtf_status.object = "⚠️ **GTF requires a source point on land.** Pick another location."
+        if self._aep_enabled and not self._is_land(lon, lat):
+            self._aep_status.object = "⚠️ **AEP transposition requires a source point on land.** Pick another location."
             return
         self._src_mx, self._src_my = to_merc(lon, lat)
-        self._recompute_gtf_field()
+        self._recompute_aep_field()
         self._status.object = self._status_md()
         self.data_version += 1
 
@@ -2311,14 +2210,14 @@ class MRMSTransposeDashboard(param.Parameterized):
         """Left pane: records source click, redraws original overlay."""
         if x is not None and y is not None:
             slon, slat = to_ll(x, y)
-            if self._gtf_enabled and not self._is_land(slon, slat):
-                self._gtf_status.object = (
-                    "⚠️ **GTF requires a source point on land.** Pick another location.")
+            if self._aep_enabled and not self._is_land(slon, slat):
+                self._aep_status.object = (
+                    "⚠️ **AEP transposition requires a source point on land.** Pick another location.")
             else:
                 self._src_mx, self._src_my = x, y
                 self._src_lat_input.value = round(slat, 4)
                 self._src_lon_input.value = round(slon, 4)
-                self._recompute_gtf_field()
+                self._recompute_aep_field()
                 self._status.object = self._status_md()
                 # Only rebuild ts when both points are set
                 if self._dst_mx is not None:
@@ -2404,8 +2303,8 @@ class MRMSTransposeDashboard(param.Parameterized):
             )
         else:
             period_label = f"1hr QPE {self._valid_time}"
-        if self._gtf_enabled:
-            period_label += " (AEP)" if self._gtf_mode == "aep" else " (GTF)"
+        if self._aep_enabled:
+            period_label += " (AEP)"
         if ari_mode:
             period_label = period_label.replace("QPE", "ARI")
 
@@ -2444,7 +2343,7 @@ class MRMSTransposeDashboard(param.Parameterized):
         self._d_lat = dst_lat - src_lat
 
         self._recompute_trans_mean()
-        self._recompute_gtf_field()
+        self._recompute_aep_field()
 
         self.data_version += 1
         self._status.object = self._status_md()
@@ -2479,7 +2378,7 @@ class MRMSTransposeDashboard(param.Parameterized):
         self._src_lon_input.value   = None
         self._dst_lat_input.value   = None
         self._dst_lon_input.value   = None
-        self._recompute_gtf_field()
+        self._recompute_aep_field()
         # Increment data_version to guarantee both map streams fire on reset
         self.data_version += 1
         self._clear_ws_mod_state()
@@ -2891,14 +2790,13 @@ class MRMSTransposeDashboard(param.Parameterized):
             margin=0,
         )
 
-        # ── Transposition method (Simple vs. GTF vs. AEP) — near the top of the page ──
-        gtf_controls = pn.Row(
+        # ── Transposition method controls — near the top of the page ──
+        method_controls = pn.Row(
             pn.Column(
                 pn.pane.Markdown("**Transposition Method**"),
-                self._gtf_toggle,
-                width=560,
+                self._trans_method_toggle,
+                width=360,
             ),
-            self._gtf_ari_select,
             pn.Column(
                 pn.pane.Markdown("**Spatial Plot Display**"),
                 self._ari_display_toggle,
@@ -2906,7 +2804,7 @@ class MRMSTransposeDashboard(param.Parameterized):
             ),
             pn.Column(
                 pn.pane.Markdown("**Status**"),
-                self._gtf_status,
+                self._aep_status,
                 sizing_mode="stretch_width",
             ),
             styles={
@@ -2922,7 +2820,7 @@ class MRMSTransposeDashboard(param.Parameterized):
             title="MRMS QPE Transposition Dashboard",
             main=[
                 pn.Column(
-                    gtf_controls,
+                    method_controls,
                     ts_controls,
                     pn.Row(maps_and_ts, ctrl, fine_ws_box, margin=0,
                            styles={"gap": "8px", "align-items": "flex-start"}),
