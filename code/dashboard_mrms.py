@@ -114,6 +114,18 @@ PRECIP_PALETTE = [
     "#cc00cc",  # 100.0+         dark magenta / purple
 ]
 
+# Long-duration (> 6 hr) scale: same palette, but stretched to cover the
+# larger accumulated totals seen in 12/24/48-hr periods (10–300 mm).
+PRECIP_BIN_EDGES_LONG = [
+    10.0, 20.0, 30.0, 50.0, 75.0, 100.0,
+    125.0, 150.0, 175.0, 200.0, 225.0, 250.0, 275.0, 300.0,
+] # mm
+
+PRECIP_BIN_EDGES_LONG_INCHES = [
+    0.4, 0.8, 1.2, 2.0, 3.0, 4.0,
+    5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+] # inches
+
 # 256-entry staircase palette: each entry maps a linearly-sampled mm value
 # to its bin colour.  Passing this to hv.Image with clim=(edge[0], edge[-1])
 # gives truly discrete colour steps at the correct mm thresholds.
@@ -130,14 +142,14 @@ del _v, _k
 _N_BINS = len(PRECIP_PALETTE)
 
 
-def _digitize_precip(data):
+def _digitize_precip(data, bin_edges=PRECIP_BIN_EDGES):
     """
-    Map raw QPE values to integer bin indices 1…_N_BINS.
+    Map raw QPE values to integer bin indices 1…_N_BINS using bin_edges.
     Dry / sub-threshold pixels (< first edge) become NaN.
     """
     arr = data.copy().astype(np.float32)
-    dry = ~np.isfinite(arr) | (arr < PRECIP_BIN_EDGES[0])
-    binned = np.digitize(arr, PRECIP_BIN_EDGES).astype(np.float32)
+    dry = ~np.isfinite(arr) | (arr < bin_edges[0])
+    binned = np.digitize(arr, bin_edges).astype(np.float32)
     binned[dry] = np.nan
     return binned
 
@@ -146,7 +158,7 @@ def _fmt_edge(v):
     return str(int(v)) if v == int(v) else str(v)
 
 
-# Colorbar boundary ticks and their mm labels (one tick per bin edge)
+# Colorbar boundary ticks (shared: both scales have the same bin count)
 _CB_TICKS  = [i + 0.5 for i in range(_N_BINS + 1)]
 _CB_LABELS = (
     [_fmt_edge(PRECIP_BIN_EDGES[0])]
@@ -157,6 +169,26 @@ _CB_LABELS_IN = (
     [_fmt_edge(PRECIP_BIN_EDGES_inches[0])]
     + [_fmt_edge(e) for e in PRECIP_BIN_EDGES_inches[1:]]
     + ["\u22655"]
+)
+_CB_LABELS_LONG = (
+    [_fmt_edge(PRECIP_BIN_EDGES_LONG[0])]
+    + [_fmt_edge(e) for e in PRECIP_BIN_EDGES_LONG[1:]]
+    + ["\u2265300"]
+)
+_CB_LABELS_LONG_IN = (
+    [_fmt_edge(PRECIP_BIN_EDGES_LONG_INCHES[0])]
+    + [_fmt_edge(e) for e in PRECIP_BIN_EDGES_LONG_INCHES[1:]]
+    + ["\u226512"]
+)
+
+# Average Recurrence Interval (ARI) display scale — shows how rare the
+# observed precip is per Atlas14 climatology, independent of the
+# transposition method in use.  Reuses PRECIP_PALETTE (same bin count).
+ARI_BIN_EDGES = [1, 2, 3, 4, 6, 8, 10, 20, 30, 40, 50, 75, 100, 200]  # years
+_CB_LABELS_ARI = (
+    [_fmt_edge(ARI_BIN_EDGES[0])]
+    + [_fmt_edge(e) for e in ARI_BIN_EDGES[1:]]
+    + ["\u2265200"]
 )
 
 PLOT_W      = 620
@@ -188,6 +220,21 @@ DEFAULT_COASTLINE_SHP = (
 DEFAULT_GAUGE_PARQUET = str(
     HAWAII_RESULTS_DIR / "usgs_lt500_min2014-2024.parquet"
 )
+
+# Atlas 14 precipitation-frequency grid, used for GTF (Geographic Transposition
+# Factor) storm transposition.  Fixed, locally-downloaded file — no on-the-fly
+# retrieval.
+DEFAULT_ATLAS14_NC = r"D:\Capstone Project\Precip_Grids\Atlas_14\a14_hawaii.nc"
+
+# Dashboard "Period" selector label → matching Atlas14 duration
+_ATLAS14_DURATION_MAP = {
+    "1 hr":  pd.Timedelta(hours=1),
+    "3 hr":  pd.Timedelta(hours=3),
+    "6 hr":  pd.Timedelta(hours=6),
+    "12 hr": pd.Timedelta(hours=12),
+    "24 hr": pd.Timedelta(hours=24),
+    "48 hr": pd.Timedelta(hours=48),
+}
 
 # ---------------------------------------------------------------------------
 # Data loading
@@ -449,6 +496,83 @@ def spatial_mean(data, mask):
     return float(np.mean(valid)) if valid.size > 0 else None
 
 
+# ---------------------------------------------------------------------------
+# Atlas 14 / GTF (Geographic Transposition Factor) helpers
+# ---------------------------------------------------------------------------
+
+def load_atlas14(path: str):
+    """
+    Open the Atlas 14 precipitation-frequency grid (lazy) for GTF transposition.
+
+    Returns
+    -------
+    ds        : xr.Dataset, dims (ARI, confidence, duration, reg, y, x)
+    lons      : 1-D ascending longitude coords (Atlas14 'x')
+    lats      : 1-D ascending latitude coords  (Atlas14 'y')
+    land_mask : 2-D bool array (y, x); True where Atlas14 has valid (land) coverage.
+                Assumed the same for every ARI/duration (verified: physical mask).
+    """
+    ds = xr.open_dataset(path)
+    lons = ds["x"].values
+    lats = ds["y"].values
+    ref = ds["precip"].isel(ARI=0, confidence=0, duration=0, reg=0).values
+    land_mask = np.isfinite(ref)
+    return ds, lons, lats, land_mask
+
+
+def _nearest_indices(coord_array, query_array):
+    """Vectorised nearest-neighbour indices of query_array within a uniformly-spaced coord_array."""
+    d = coord_array[1] - coord_array[0]
+    idx = np.round((query_array - coord_array[0]) / d).astype(np.intp)
+    return np.clip(idx, 0, len(coord_array) - 1)
+
+
+def _invert_to_log_ari(ref, amounts, log_ari):
+    """
+    Given observed values `ref` and per-cell climatology curves `amounts`
+    (shape (ARI, ...) matching ref broadcastable), return the equivalent
+    log(ARI) via linear interpolation between curve points, log-linearly
+    extrapolated beyond the table's ends.
+    """
+    log_ari_field = np.zeros(ref.shape, dtype=np.float32)
+    filled = np.zeros(ref.shape, dtype=bool)
+    for k in range(len(log_ari) - 1):
+        y0, y1 = amounts[k], amounts[k + 1]
+        x0, x1 = log_ari[k], log_ari[k + 1]
+        seg = (ref >= y0) & (ref <= y1) & ~filled
+        denom = np.where(y1 != y0, y1 - y0, 1.0)
+        log_ari_field = np.where(seg, x0 + (ref - y0) / denom * (x1 - x0), log_ari_field)
+        filled |= seg
+    below = ref <= amounts[0]
+    y0, y1, x0, x1 = amounts[0], amounts[1], log_ari[0], log_ari[1]
+    denom = np.where(y1 != y0, y1 - y0, 1.0)
+    log_ari_field = np.where(below, x0 + (ref - y0) / denom * (x1 - x0), log_ari_field)
+    above = ref >= amounts[-1]
+    y0, y1, x0, x1 = amounts[-2], amounts[-1], log_ari[-2], log_ari[-1]
+    denom = np.where(y1 != y0, y1 - y0, 1.0)
+    log_ari_field = np.where(above, x0 + (ref - y0) / denom * (x1 - x0), log_ari_field)
+    return log_ari_field
+
+
+def _forward_from_log_ari(log_ari_field, amounts, log_ari):
+    """Inverse of _invert_to_log_ari: evaluate climatology curves `amounts` at given log(ARI) positions."""
+    v_new = np.zeros(log_ari_field.shape, dtype=np.float32)
+    filled = np.zeros(log_ari_field.shape, dtype=bool)
+    for k in range(len(log_ari) - 1):
+        x0, x1 = log_ari[k], log_ari[k + 1]
+        y0, y1 = amounts[k], amounts[k + 1]
+        seg = (log_ari_field >= x0) & (log_ari_field <= x1) & ~filled
+        v_new = np.where(seg, y0 + (log_ari_field - x0) / (x1 - x0) * (y1 - y0), v_new)
+        filled |= seg
+    below = log_ari_field <= log_ari[0]
+    x0, x1, y0, y1 = log_ari[0], log_ari[1], amounts[0], amounts[1]
+    v_new = np.where(below, y0 + (log_ari_field - x0) / (x1 - x0) * (y1 - y0), v_new)
+    above = log_ari_field >= log_ari[-1]
+    x0, x1, y0, y1 = log_ari[-2], log_ari[-1], amounts[-2], amounts[-1]
+    v_new = np.where(above, y0 + (log_ari_field - x0) / (x1 - x0) * (y1 - y0), v_new)
+    return v_new
+
+
 def redistribute_ts(values, idx, new_val, method="Proportional", sigma=3.0, window=3):
     """
     Change values[idx] to new_val and redistribute the difference across
@@ -673,26 +797,50 @@ def make_tiles():
     return hv.element.tiles.CartoLight().opts(width=PLOT_W, height=PLOT_H)
 
 
-def make_image(lons, lats, data, _already_merc=False, use_imperial=False):
+def make_image(lons, lats, data, _already_merc=False, use_imperial=False, long_duration=False,
+               ari_mode=False):
     """
     Build an hv.Image in Web Mercator coordinates using the discrete
     radar-style colormap.  Each bin occupies equal height on the colorbar;
     tick labels show actual mm thresholds.  Dry pixels are transparent.
     Hover shows lat/lon and the actual mm value from a second vdim.
+
+    long_duration=True switches to the 10–300 mm scale used for periods
+    longer than 6 hours; otherwise the default 0.25–100 mm scale is used.
+    ari_mode=True treats `data` as an Atlas14 average recurrence interval
+    (years) field instead of raw QPE, using a fixed 1–200 yr scale.
     """
     if not _already_merc:
         lons, lats, data = regrid_to_mercator_lats(lons, lats, data)
     x0, y0, x1, y1 = _merc_bounds(lons, lats)
     # Keep south-up orientation so row 0 aligns with ys[0] = y0 (south)
     south_up = data.astype(np.float32)
-    binned = _digitize_precip(south_up)
-    raw_mm  = south_up.copy()
-    raw_mm[~np.isfinite(raw_mm) | (raw_mm < PRECIP_BIN_EDGES[0])] = np.nan
 
-    disp_unit   = "in" if use_imperial else "mm"
-    raw_display = raw_mm * 0.0393701 if use_imperial else raw_mm
-    cb_labels   = _CB_LABELS_IN if use_imperial else _CB_LABELS
-    hover_fmt   = "0.3f" if use_imperial else "0.2f"
+    if ari_mode:
+        bin_edges   = ARI_BIN_EDGES
+        binned      = _digitize_precip(south_up, bin_edges)
+        raw_display = south_up.copy()
+        raw_display[~np.isfinite(raw_display) | (raw_display < bin_edges[0])] = np.nan
+        disp_unit   = "yr"
+        cb_labels   = _CB_LABELS_ARI
+        hover_fmt   = "0.1f"
+        cb_title    = "ARI (yr)"
+        hover_label = "ARI"
+    else:
+        bin_edges = PRECIP_BIN_EDGES_LONG if long_duration else PRECIP_BIN_EDGES
+        binned = _digitize_precip(south_up, bin_edges)
+        raw_mm  = south_up.copy()
+        raw_mm[~np.isfinite(raw_mm) | (raw_mm < bin_edges[0])] = np.nan
+
+        disp_unit   = "in" if use_imperial else "mm"
+        raw_display = raw_mm * 0.0393701 if use_imperial else raw_mm
+        if long_duration:
+            cb_labels = _CB_LABELS_LONG_IN if use_imperial else _CB_LABELS_LONG
+        else:
+            cb_labels = _CB_LABELS_IN if use_imperial else _CB_LABELS
+        hover_fmt   = "0.3f" if use_imperial else "0.2f"
+        cb_title    = f"QPE ({disp_unit})"
+        hover_label = "QPE"
 
     ny, nx = binned.shape
     xs = np.linspace(x0, x1, nx)
@@ -724,7 +872,7 @@ def make_image(lons, lats, data, _already_merc=False, use_imperial=False):
         tooltips=[
             ("Lat", "$y{custom}"),
             ("Lon", "$x{custom}"),
-            ("QPE", f"@QPE_val{{{hover_fmt}}} {disp_unit}"),
+            (hover_label, f"@QPE_val{{{hover_fmt}}} {disp_unit}"),
         ],
         formatters={
             "$y": _lat_fmt,
@@ -741,7 +889,7 @@ def make_image(lons, lats, data, _already_merc=False, use_imperial=False):
         alpha=0.65,
         colorbar=True,
         colorbar_opts={
-            "title": f"QPE ({disp_unit})",
+            "title": cb_title,
             "ticker": ticker,
             "formatter": formatter,
             "major_tick_line_color": "black",
@@ -775,7 +923,8 @@ class MRMSTransposeDashboard(param.Parameterized):
 
     def __init__(self, nc_path: str, shp_path: str = None,
                  coastline_path: str = DEFAULT_COASTLINE_SHP,
-                 gauge_path: str = DEFAULT_GAUGE_PARQUET, **params):
+                 gauge_path: str = DEFAULT_GAUGE_PARQUET,
+                 atlas14_path: str = DEFAULT_ATLAS14_NC, **params):
         super().__init__(**params)
         self.nc_path  = nc_path
         self.shp_path = shp_path
@@ -828,6 +977,27 @@ class MRMSTransposeDashboard(param.Parameterized):
                 print(f"  Loaded {len(self._gauge_gdf_3857)} gauge locations")
             except Exception as _e:
                 print(f"  [warn] gauges not loaded: {_e}")
+
+        # ── Atlas 14 climatology (for GTF transposition) ───────────────────────────
+        self._has_atlas14 = False
+        self._a14_ds = self._a14_lons = self._a14_lats = self._a14_land_mask = None
+        if atlas14_path:
+            try:
+                self._a14_ds, self._a14_lons, self._a14_lats, self._a14_land_mask = \
+                    load_atlas14(atlas14_path)
+                self._has_atlas14 = True
+                print(f"  Loaded Atlas 14 climatology ({atlas14_path})")
+            except Exception as _e:
+                print(f"  [warn] Atlas 14 not loaded: {_e}")
+
+        # GTF (Geographic Transposition Factor) state
+        self._gtf_enabled        = False
+        self._gtf_mode           = "gtf"  # "gtf" (single-point) or "aep" (full-field)
+        self._gtf_field          = None   # 2-D array, same shape as self.data
+        self._gtf_info           = None   # dict: duration/ari/below_range/storm_value
+        self._gtf_ari_override   = None   # None = auto-select ARI
+        self._gtf_version        = 0      # bumped each recompute; used in cache keys
+        self._a14_duration_cache = {}     # {pd.Timedelta: (precip_allari, ari_values)}
 
         # ── Watershed stream (triggers redraw on dropdown/rotation/fine-tune changes) ──
         # Split: orig map only needs watershed changes; trans map needs all params.
@@ -902,6 +1072,46 @@ class MRMSTransposeDashboard(param.Parameterized):
         self._fine_lon_slider.param.watch(self._on_fine_lon_change, "value_throttled")
         self._fine_lat_slider.param.watch(self._on_fine_lat_change, "value_throttled")
         self.param.watch(self._on_fine_param_change, ["fine_lon", "fine_lat"])
+
+        # ── GTF (Atlas 14) controls ────────────────────────────────────────
+        self._gtf_toggle = pn.widgets.RadioButtonGroup(
+            name="Transposition Method",
+            options=["Simple Translation", "GTF (Atlas 14)", "AEP Transposition (Atlas 14)"],
+            value="Simple Translation",
+            button_type="default",
+            width=560,
+            disabled=not self._has_atlas14,
+        )
+        self._gtf_toggle.param.watch(self._on_gtf_mode_change, "value")
+
+        _ari_opts = (
+            ["Auto"] + [int(a) for a in self._a14_ds["ARI"].values]
+            if self._has_atlas14 else ["Auto"]
+        )
+        self._gtf_ari_select = pn.widgets.Select(
+            name="ARI (yr)", options=_ari_opts, value="Auto",
+            width=140, visible=False,
+        )
+        self._gtf_ari_select.param.watch(self._on_gtf_ari_change, "value")
+
+        self._gtf_status = pn.pane.Markdown(
+            ("*Select GTF or AEP to transpose using Atlas 14 climatology "
+             "(source point must be on land).*") if self._has_atlas14 else
+            "*Atlas 14 climatology file not found — GTF/AEP methods unavailable.*",
+            width=480,
+        )
+
+        # ── Spatial-plot display mode (observed QPE vs. Atlas14 recurrence interval) ──
+        self._show_ari = False
+        self._ari_display_toggle = pn.widgets.RadioButtonGroup(
+            name="Spatial Plot Display",
+            options=["Precipitation", "Recurrence Interval (Atlas 14)"],
+            value="Precipitation",
+            button_type="default",
+            width=280,
+            disabled=not self._has_atlas14,
+        )
+        self._ari_display_toggle.param.watch(self._on_display_mode_change, "value")
 
         # ── Manual coordinate inputs ──────────────────────────────────────
         self._src_lat_input = pn.widgets.FloatInput(
@@ -1149,6 +1359,7 @@ class MRMSTransposeDashboard(param.Parameterized):
 
         # Recompute watershed mean (uses accumulated data now)
         self._recompute_trans_mean()
+        self._recompute_gtf_field()
         self._stats.object = self._stats_md()
 
         # Redraw spatial maps with accumulated data — increment data_version
@@ -1189,8 +1400,9 @@ class MRMSTransposeDashboard(param.Parameterized):
                 v_dst_orig_list.append(
                     point_value_at(g["lons"], g["lats"], g["data"], dst_lon, dst_lat))
 
+            gd = self._apply_gtf(g["data"])
             tl, tt, td = transpose_data(
-                g["lons"], g["lats"], g["data"], total_d_lon, total_d_lat)
+                g["lons"], g["lats"], gd, total_d_lon, total_d_lat)
             tl, tt, td = rotate_data(
                 tl, tt, td, self.rotation_deg,
                 pivot_lon=piv_lon, pivot_lat=piv_lat)
@@ -1266,8 +1478,9 @@ class MRMSTransposeDashboard(param.Parameterized):
         t_ws_mask = None
         if transposed and self._ts_grids:
             ref = self._ts_grids[0]
+            gd_ref = self._apply_gtf(ref["data"])
             tl, tt, td = transpose_data(
-                ref["lons"], ref["lats"], ref["data"], total_d_lon, total_d_lat)
+                ref["lons"], ref["lats"], gd_ref, total_d_lon, total_d_lat)
             tl, tt, td = rotate_data(
                 tl, tt, td, self.rotation_deg, pivot_lon=piv_lon, pivot_lat=piv_lat)
             t_ws_mask = compute_watershed_mask(geom_4326, tl, tt)
@@ -1278,8 +1491,9 @@ class MRMSTransposeDashboard(param.Parameterized):
             orig_vals.append(v_orig if v_orig is not None else 0.0)
 
             if transposed and t_ws_mask is not None:
+                gd = self._apply_gtf(g["data"])
                 tl, tt, td = transpose_data(
-                    g["lons"], g["lats"], g["data"], total_d_lon, total_d_lat)
+                    g["lons"], g["lats"], gd, total_d_lon, total_d_lat)
                 tl, tt, td = rotate_data(
                     tl, tt, td, self.rotation_deg, pivot_lon=piv_lon, pivot_lat=piv_lat)
                 v_trans = spatial_mean(td, t_ws_mask)
@@ -1659,6 +1873,7 @@ class MRMSTransposeDashboard(param.Parameterized):
             None if piv_lon is None else round(piv_lon, 7),
             None if piv_lat is None else round(piv_lat, 7),
             self._ts_grids_version,
+            self._gtf_enabled, self._gtf_version,
         )
         if key == self._trans_accum_cache_key:
             return self._trans_accum_cache
@@ -1667,8 +1882,9 @@ class MRMSTransposeDashboard(param.Parameterized):
             accum = None
             t_lons_ref = t_lats_ref = None
             for g in self._ts_grids:
+                gd = self._apply_gtf(g["data"])
                 tl, tt, td = transpose_data(
-                    g["lons"], g["lats"], g["data"], total_d_lon, total_d_lat)
+                    g["lons"], g["lats"], gd, total_d_lon, total_d_lat)
                 tl, tt, td = rotate_data(
                     tl, tt, td, rotation_deg,
                     pivot_lon=piv_lon, pivot_lat=piv_lat)
@@ -1684,7 +1900,7 @@ class MRMSTransposeDashboard(param.Parameterized):
             result = (t_lons_ref, t_lats_ref, accum)
         else:
             t_lons, t_lats, t_data = transpose_data(
-                self.lons, self.lats, self.data, total_d_lon, total_d_lat)
+                self.lons, self.lats, self._apply_gtf(self.data), total_d_lon, total_d_lat)
             t_lons, t_lats, t_data = rotate_data(
                 t_lons, t_lats, t_data, rotation_deg,
                 pivot_lon=piv_lon, pivot_lat=piv_lat)
@@ -1727,6 +1943,276 @@ class MRMSTransposeDashboard(param.Parameterized):
         r_mask = compute_watershed_mask(geom_4326, r_lons, r_lats)
         self._trans_mean = spatial_mean(r_data, r_mask)
 
+    # ── GTF (Atlas 14) helpers ────────────────────────────────────────────
+
+    def _is_land(self, lon, lat) -> bool:
+        """True if (lon, lat) falls on a valid (non-water) Atlas 14 grid cell."""
+        if not self._has_atlas14:
+            return True
+        dlon = self._a14_lons[1] - self._a14_lons[0]
+        dlat = self._a14_lats[1] - self._a14_lats[0]
+        if not (self._a14_lons[0] - dlon / 2 <= lon <= self._a14_lons[-1] + dlon / 2):
+            return False
+        if not (self._a14_lats[0] - dlat / 2 <= lat <= self._a14_lats[-1] + dlat / 2):
+            return False
+        ix = int(np.clip(round((lon - self._a14_lons[0]) / dlon), 0, len(self._a14_lons) - 1))
+        iy = int(np.clip(round((lat - self._a14_lats[0]) / dlat), 0, len(self._a14_lats) - 1))
+        return bool(self._a14_land_mask[iy, ix])
+
+    def _get_a14_duration_slice(self, duration):
+        """
+        Return (precip_allari, ari_values) for the given Atlas14 duration,
+        shape (ARI, y, x).  Cached per duration since each slice is ~75 MB.
+        """
+        if duration in self._a14_duration_cache:
+            return self._a14_duration_cache[duration]
+        try:
+            da = self._a14_ds["precip"].sel(duration=duration, method="nearest")
+            da = da.isel(confidence=0, reg=0).transpose("ARI", "y", "x")
+            arr = da.values
+            ari_values = self._a14_ds["ARI"].values.astype(float)
+        except Exception as exc:
+            print(f"  [warn] Atlas14 duration slice failed: {exc}")
+            return None, None
+        self._a14_duration_cache[duration] = (arr, ari_values)
+        return arr, ari_values
+
+    def _compute_display_ari_field(self, data, lons, lats):
+        """
+        Convert each grid cell's own observed magnitude into its equivalent
+        Atlas14 average recurrence interval (years), for the "Recurrence
+        Interval" spatial-plot display mode.  Returns None if Atlas14 or the
+        selected duration is unavailable.  Dry cells and cells outside
+        Atlas14 coverage come out as NaN.
+        """
+        if not self._has_atlas14:
+            return None
+        duration = _ATLAS14_DURATION_MAP.get(self._period_select.value, pd.Timedelta(hours=1))
+        arr_allari, ari_values = self._get_a14_duration_slice(duration)
+        if arr_allari is None:
+            return None
+
+        ix = _nearest_indices(self._a14_lons, lons)
+        iy = _nearest_indices(self._a14_lats, lats)
+        land = self._a14_land_mask[iy[:, None], ix[None, :]]
+        amounts = arr_allari[:, iy[:, None], ix[None, :]].astype(np.float32)
+
+        log_ari = np.log(ari_values)
+        ref = data.astype(np.float32)
+        dry_mask = ~np.isfinite(ref) | (ref < PRECIP_BIN_EDGES[0])
+
+        ari_field = np.exp(_invert_to_log_ari(ref, amounts, log_ari))
+        ari_field[dry_mask | ~land] = np.nan
+        return ari_field
+
+    def _recompute_gtf_field(self):
+        """
+        Recompute the Atlas14-based scaling field (shared by both the
+        single-point GTF and full-field AEP methods).  The result is always
+        a ratio: multiplying it into the precip grid before translating it
+        rescales the storm using local climatology instead of a flat shift.
+        """
+        self._gtf_field = None
+        if not self._gtf_enabled:
+            return
+        self._gtf_version += 1
+
+        if not self._has_atlas14:
+            self._gtf_status.object = "*Atlas 14 climatology file not found — unavailable.*"
+            return
+        if self._src_mx is None:
+            self._gtf_status.object = "*Set a source point on land to compute the field.*"
+            return
+
+        src_lon, src_lat = to_ll(self._src_mx, self._src_my)
+        if not self._is_land(src_lon, src_lat):
+            self._gtf_status.object = "⚠️ Source point is over water — unavailable."
+            return
+
+        ref_data = self._ts_accum_data if self._ts_accum_data is not None else self.data
+
+        period_label = self._period_select.value
+        duration = _ATLAS14_DURATION_MAP.get(period_label, pd.Timedelta(hours=1))
+
+        arr_allari, ari_values = self._get_a14_duration_slice(duration)
+        if arr_allari is None:
+            self._gtf_status.object = "⚠️ Atlas 14 duration lookup failed."
+            return
+
+        total_d_lon = self._d_lon + self.fine_lon
+        total_d_lat = self._d_lat + self.fine_lat
+
+        if self._gtf_mode == "aep":
+            self._compute_aep_field(ref_data, arr_allari, ari_values,
+                                     total_d_lon, total_d_lat, period_label)
+        else:
+            self._compute_point_gtf_field(ref_data, src_lon, src_lat, arr_allari, ari_values,
+                                           total_d_lon, total_d_lat, period_label)
+
+    def _compute_point_gtf_field(self, ref_data, src_lon, src_lat, arr_allari, ari_values,
+                                  total_d_lon, total_d_lat, period_label):
+        """
+        Single-point GTF: one ARI is selected from the storm's total at the
+        source point, then the whole field is scaled by the ratio of Atlas14
+        precip at each cell's *transposed* position to that single storm
+        total.  Cells with no Atlas14 coverage at the transposed position
+        (open ocean) come out as NaN.
+        """
+        storm_value = point_value_at(self.lons, self.lats, ref_data, src_lon, src_lat)
+        if not np.isfinite(storm_value) or storm_value <= 0:
+            self._gtf_status.object = "⚠️ No precipitation at the source point for the selected period."
+            return
+
+        dlon_a14 = self._a14_lons[1] - self._a14_lons[0]
+        dlat_a14 = self._a14_lats[1] - self._a14_lats[0]
+        ix = int(np.clip(round((src_lon - self._a14_lons[0]) / dlon_a14), 0, len(self._a14_lons) - 1))
+        iy = int(np.clip(round((src_lat - self._a14_lats[0]) / dlat_a14), 0, len(self._a14_lats) - 1))
+
+        amounts = arr_allari[:, iy, ix]
+        below_range = False
+        if self._gtf_ari_override is not None:
+            ari = float(self._gtf_ari_override)
+            k = int(np.argmin(np.abs(ari_values - ari)))
+        else:
+            valid = np.isfinite(amounts)
+            if not valid.any():
+                self._gtf_status.object = "⚠️ Atlas 14 has no data at the source point."
+                return
+            below_range = bool(storm_value < np.nanmin(amounts[valid]))
+            diffs = np.where(valid, np.abs(amounts - storm_value), np.inf)
+            k = int(np.argmin(diffs))
+            ari = float(ari_values[k])
+
+        a14_target = arr_allari[k]   # 2-D (y, x) Atlas14 grid at the chosen ARI/duration
+
+        ix_t = _nearest_indices(self._a14_lons, self.lons + total_d_lon)
+        iy_t = _nearest_indices(self._a14_lats, self.lats + total_d_lat)
+        out_lon = ((self.lons + total_d_lon < self._a14_lons[0] - dlon_a14 / 2) |
+                   (self.lons + total_d_lon > self._a14_lons[-1] + dlon_a14 / 2))
+        out_lat = ((self.lats + total_d_lat < self._a14_lats[0] - dlat_a14 / 2) |
+                   (self.lats + total_d_lat > self._a14_lats[-1] + dlat_a14 / 2))
+
+        sampled = a14_target[np.ix_(iy_t, ix_t)]
+        sampled = np.where(out_lat[:, None] | out_lon[None, :], np.nan, sampled)
+
+        self._gtf_field = sampled.astype(np.float32) / float(storm_value)
+        self._gtf_info = {
+            "mode": "gtf", "duration": period_label, "ari": ari,
+            "below_range": below_range, "storm_value": storm_value,
+        }
+
+        note = " *(below A14 range — using lowest ARI)*" if below_range else ""
+        manual = "manual" if self._gtf_ari_override is not None else "auto"
+        self._gtf_status.object = (
+            f"**GTF active** — duration: {period_label} · ARI: {ari:.0f}-yr ({manual}) · "
+            f"source total: {storm_value:.1f} mm{note}"
+        )
+
+    def _compute_aep_field(self, ref_data, arr_allari, ari_values,
+                            total_d_lon, total_d_lat, period_label):
+        """
+        Full-field AEP transposition: every wet cell's own observed magnitude
+        is converted to an equivalent Atlas14 return period (AEP) using the
+        climatology AT ITS OWN position, then re-evaluated against the
+        climatology at its *transposed* position to get the new magnitude.
+        Values outside Atlas14's ARI range are log-linearly extrapolated.
+
+        Cells lacking Atlas14 coverage at either the source or the
+        transposed position are blanked (NaN); dry cells are left at 0 so no
+        rain is introduced where none existed.
+        """
+        ix_src = _nearest_indices(self._a14_lons, self.lons)
+        iy_src = _nearest_indices(self._a14_lats, self.lats)
+        ix_dst = _nearest_indices(self._a14_lons, self.lons + total_d_lon)
+        iy_dst = _nearest_indices(self._a14_lats, self.lats + total_d_lat)
+
+        land_src = self._a14_land_mask[iy_src[:, None], ix_src[None, :]]
+        land_dst = self._a14_land_mask[iy_dst[:, None], ix_dst[None, :]]
+
+        # (ARI, nlat, nlon) climatology curves at every cell's native / transposed position
+        amounts_src = arr_allari[:, iy_src[:, None], ix_src[None, :]].astype(np.float32)
+        amounts_dst = arr_allari[:, iy_dst[:, None], ix_dst[None, :]].astype(np.float32)
+
+        log_ari = np.log(ari_values)
+        ref = ref_data.astype(np.float32)
+        dry_mask = ~np.isfinite(ref) | (ref < PRECIP_BIN_EDGES[0])
+
+        log_ari_field = _invert_to_log_ari(ref, amounts_src, log_ari)
+        v_new = _forward_from_log_ari(log_ari_field, amounts_dst, log_ari)
+        v_new = np.maximum(v_new, 0.0)   # clip negative extrapolation artifacts
+
+        # ── Ratio field: dry cells stay dry; wet cells need coverage at both ends ──
+        ratio = np.full(ref.shape, np.nan, dtype=np.float32)
+        ratio[dry_mask] = 0.0
+        valid = (~dry_mask) & land_src & land_dst
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio_valid = np.where(ref > 0, v_new / ref, 0.0)
+        ratio[valid] = ratio_valid[valid]
+
+        self._gtf_field = ratio
+        n_wet = int(np.count_nonzero(~dry_mask))
+        n_blocked = int(np.count_nonzero(~dry_mask & ~(land_src & land_dst)))
+        self._gtf_info = {"mode": "aep", "duration": period_label}
+        self._gtf_status.object = (
+            f"**AEP transposition active** — duration: {period_label} · "
+            f"{n_blocked}/{max(n_wet, 1)} wet cell(s) blanked (no Atlas14 coverage)"
+        )
+
+    def _apply_gtf(self, data):
+        """Multiply by the cached Atlas14 scaling field when active, else pass through."""
+        if not self._gtf_enabled or self._gtf_field is None:
+            return data
+        if data.shape != self._gtf_field.shape:
+            return data
+        return data * self._gtf_field
+
+    def _on_gtf_mode_change(self, event):
+        """Switch between simple translation, single-point GTF, and full-field AEP transposition."""
+        self._gtf_mode    = "aep" if event.new == "AEP Transposition (Atlas 14)" else "gtf"
+        self._gtf_enabled = event.new in ("GTF (Atlas 14)", "AEP Transposition (Atlas 14)")
+        self._gtf_ari_select.visible = (event.new == "GTF (Atlas 14)")
+
+        # Both Atlas14 methods are pure-translation — disable rotation while active
+        self._rot_slider.disabled = self._gtf_enabled
+        if self._gtf_enabled and self.rotation_deg != 0.0:
+            self._rot_slider.value = 0.0
+            self.rotation_deg = 0.0
+
+        # A previously-set source point over water is invalid in either Atlas14 mode
+        if self._gtf_enabled and self._src_mx is not None:
+            slon, slat = to_ll(self._src_mx, self._src_my)
+            if not self._is_land(slon, slat):
+                self._src_mx = self._src_my = None
+                self._src_lat_input.value = None
+                self._src_lon_input.value = None
+                self._gtf_status.object = (
+                    "⚠️ **Previous source point was over water and was cleared.** "
+                    "Pick a source point on land.")
+
+        self._recompute_gtf_field()
+        self.data_version += 1
+        self._status.object = self._status_md()
+        self._stats.object  = self._stats_md()
+        self._clear_ws_mod_state()
+        if self._ts_grids:
+            self._ts_pane.object    = self._build_ts_plot()
+            self._ws_ts_pane.object = self._build_ws_ts_plot()
+
+    def _on_gtf_ari_change(self, event):
+        """Manual ARI override for the GTF field (or 'Auto' for auto-selection)."""
+        self._gtf_ari_override = None if event.new == "Auto" else int(event.new)
+        self._recompute_gtf_field()
+        self.data_version += 1
+        self._stats.object = self._stats_md()
+        if self._ts_grids:
+            self._ws_ts_pane.object = self._build_ws_ts_plot()
+
+    def _on_display_mode_change(self, event):
+        """Toggle spatial-plot display between observed QPE and Atlas14 recurrence interval."""
+        self._show_ari = (event.new == "Recurrence Interval (Atlas 14)")
+        self.data_version += 1
+        self._rebuild_spatial_dmaps()
+
     # ── Rotation callbacks ─────────────────────────────────────────────────
 
     def _pivot_ll(self, fine_lon=None, fine_lat=None):
@@ -1763,6 +2249,7 @@ class MRMSTransposeDashboard(param.Parameterized):
     def _on_fine_param_change(self, event):
         """Recompute trans mean + stats + ts whenever fine_lon or fine_lat changes."""
         self._recompute_trans_mean()
+        self._recompute_gtf_field()
         self._stats.object = self._stats_md()
         if self._src_mx is not None and self._dst_mx is not None:
             self._ts_pane.object = self._build_ts_plot()
@@ -1774,7 +2261,11 @@ class MRMSTransposeDashboard(param.Parameterized):
         lon = self._src_lon_input.value
         if lat is None or lon is None:
             return
+        if self._gtf_enabled and not self._is_land(lon, lat):
+            self._gtf_status.object = "⚠️ **GTF requires a source point on land.** Pick another location."
+            return
         self._src_mx, self._src_my = to_merc(lon, lat)
+        self._recompute_gtf_field()
         self._status.object = self._status_md()
         self.data_version += 1
 
@@ -1819,18 +2310,25 @@ class MRMSTransposeDashboard(param.Parameterized):
     def _orig_cb(self, x, y, selected_watershed, data_version):
         """Left pane: records source click, redraws original overlay."""
         if x is not None and y is not None:
-            self._src_mx, self._src_my = x, y
             slon, slat = to_ll(x, y)
-            self._src_lat_input.value = round(slat, 4)
-            self._src_lon_input.value = round(slon, 4)
-            self._status.object = self._status_md()
-            # Only rebuild ts when both points are set
-            if self._dst_mx is not None:
-                self._ts_pane.object = self._build_ts_plot()
+            if self._gtf_enabled and not self._is_land(slon, slat):
+                self._gtf_status.object = (
+                    "⚠️ **GTF requires a source point on land.** Pick another location.")
+            else:
+                self._src_mx, self._src_my = x, y
+                self._src_lat_input.value = round(slat, 4)
+                self._src_lon_input.value = round(slon, 4)
+                self._recompute_gtf_field()
+                self._status.object = self._status_md()
+                # Only rebuild ts when both points are set
+                if self._dst_mx is not None:
+                    self._ts_pane.object = self._build_ts_plot()
 
         # Use accumulated data when a multi-hour period is loaded;
         # pass pre-computed Mercator regrid to avoid recomputing each call.
         if self._ts_accum_data is not None:
+            ref_lons, ref_lats, ref_data = (
+                self._ts_accum_lons, self._ts_accum_lats, self._ts_accum_data)
             merc = self._accum_orig_merc  # pre-computed in _on_load_ts
             n = len(self._ts_grids)
             period_label = (
@@ -1839,13 +2337,23 @@ class MRMSTransposeDashboard(param.Parameterized):
                 else f"1hr QPE {self._ts_grids[0]['valid_time']}"
             )
         else:
+            ref_lons, ref_lats, ref_data = self.lons, self.lats, self.data
             merc = self._orig_merc  # pre-computed in __init__
             period_label = f"1hr QPE {self._valid_time}"
+
+        ari_mode = False
+        if self._show_ari:
+            ari_field = self._compute_display_ari_field(ref_data, ref_lons, ref_lats)
+            if ari_field is not None:
+                merc = regrid_to_mercator_lats(ref_lons, ref_lats, ari_field)
+                ari_mode = True
+                period_label = period_label.replace("QPE", "ARI")
 
         sel_poly = build_selected_watershed_polygon(self._selected_ws_geom_3857())
         overlay  = (
             make_tiles()
-            * make_image(*merc, _already_merc=True, use_imperial=self._use_imperial)
+            * make_image(*merc, _already_merc=True, use_imperial=self._use_imperial,
+                         long_duration=self._is_long_duration(), ari_mode=ari_mode)
             * self._coastline_overlay
             * self._all_ws_polys
             * sel_poly
@@ -1879,6 +2387,14 @@ class MRMSTransposeDashboard(param.Parameterized):
         t_lons, t_lats, t_data = self._get_trans_accum(
             total_d_lon, total_d_lat, rotation_deg, piv_lon, piv_lat)
 
+        disp_lons, disp_lats, disp_data = t_lons, t_lats, t_data
+        ari_mode = False
+        if self._show_ari:
+            ari_field = self._compute_display_ari_field(t_data, t_lons, t_lats)
+            if ari_field is not None:
+                disp_data = ari_field
+                ari_mode = True
+
         if self._ts_grids:
             n = len(self._ts_grids)
             period_label = (
@@ -1888,11 +2404,16 @@ class MRMSTransposeDashboard(param.Parameterized):
             )
         else:
             period_label = f"1hr QPE {self._valid_time}"
+        if self._gtf_enabled:
+            period_label += " (AEP)" if self._gtf_mode == "aep" else " (GTF)"
+        if ari_mode:
+            period_label = period_label.replace("QPE", "ARI")
 
         sel_poly = build_selected_watershed_polygon(self._selected_ws_geom_3857())
         overlay  = (
             make_tiles()
-            * make_image(t_lons, t_lats, t_data, use_imperial=self._use_imperial)
+            * make_image(disp_lons, disp_lats, disp_data, use_imperial=self._use_imperial,
+                         long_duration=self._is_long_duration(), ari_mode=ari_mode)
             * self._coastline_overlay
             * self._all_ws_polys
             * sel_poly
@@ -1923,6 +2444,7 @@ class MRMSTransposeDashboard(param.Parameterized):
         self._d_lat = dst_lat - src_lat
 
         self._recompute_trans_mean()
+        self._recompute_gtf_field()
 
         self.data_version += 1
         self._status.object = self._status_md()
@@ -1957,6 +2479,7 @@ class MRMSTransposeDashboard(param.Parameterized):
         self._src_lon_input.value   = None
         self._dst_lat_input.value   = None
         self._dst_lon_input.value   = None
+        self._recompute_gtf_field()
         # Increment data_version to guarantee both map streams fire on reset
         self.data_version += 1
         self._clear_ws_mod_state()
@@ -1975,6 +2498,10 @@ class MRMSTransposeDashboard(param.Parameterized):
     def _stage_scale(self): return 1.0 if self._use_imperial else 0.3048
     def _stage_unit(self):  return 'ft' if self._use_imperial else 'm'
 
+    def _is_long_duration(self) -> bool:
+        """True for periods > 6 hr, which use the stretched 10–300 mm color scale."""
+        return int(self._period_select.value.split()[0]) > 6
+
     def _on_units_change(self, event):
         """Rebuild all displays when the SI/Imperial toggle changes."""
         self._use_imperial = event.new
@@ -1986,11 +2513,16 @@ class MRMSTransposeDashboard(param.Parameterized):
             self._ws_ts_pane.object = self._build_ws_ts_plot()
         if self._last_sac_data is not None:
             self._rebuild_sac_plot()
-        # Recreate Tap streams and DynamicMaps to force a fresh Bokeh figure
-        # (updating colorbar labels, title, hover tooltip).
-        # Fresh streams initialised at the current click positions ensure the
-        # new Bokeh figures get clean tap callbacks registered — reusing the
-        # old stream objects left stale Bokeh linkage that broke click-to-select.
+        self._rebuild_spatial_dmaps()
+
+    def _rebuild_spatial_dmaps(self):
+        """
+        Recreate Tap streams and DynamicMaps to force a fresh Bokeh figure
+        (updates colorbar labels/ticker, title, hover tooltip).  Fresh streams
+        initialised at the current click positions ensure the new Bokeh
+        figures get clean tap callbacks registered — reusing the old stream
+        objects left stale Bokeh linkage that broke click-to-select.
+        """
         self._tap_orig  = streams.Tap(x=self._src_mx, y=self._src_my)
         self._tap_trans = streams.Tap(x=self._dst_mx, y=self._dst_my)
         self._orig_dmap  = hv.DynamicMap(
@@ -2064,12 +2596,12 @@ class MRMSTransposeDashboard(param.Parameterized):
             su = self._stage_unit()
             max_q_cfs   = float(rating['discharge_cfs'][-1])
             max_q_disp  = max_q_cfs / (1.0 if self._use_imperial else 1.0)  # cfs either way
-            extrap_note = f' — extrapolated above {max_q_disp:.0f} ft³/s'
+            extrap_note = f' — extrapolated above {max_q_disp:.0f} ft³/s' # Note the max discharge in the rating curve
             p_stage = bk_figure(
                 x_axis_type='datetime', height=200,
                 sizing_mode='stretch_width',
                 title=(f'Estimated Stage Height — {d["ws_name"]}'
-                       f' (Gauge {d["basin_id"]}){title_ext}{extrap_note}'),
+                       f' (Gauge {d["basin_id"]}){title_ext}'),#{extrap_note}'),
                 x_axis_label='Time (UTC)',
                 y_axis_label=f'Stage ({su})',
                 x_range=p.x_range,
@@ -2359,10 +2891,38 @@ class MRMSTransposeDashboard(param.Parameterized):
             margin=0,
         )
 
+        # ── Transposition method (Simple vs. GTF vs. AEP) — near the top of the page ──
+        gtf_controls = pn.Row(
+            pn.Column(
+                pn.pane.Markdown("**Transposition Method**"),
+                self._gtf_toggle,
+                width=560,
+            ),
+            self._gtf_ari_select,
+            pn.Column(
+                pn.pane.Markdown("**Spatial Plot Display**"),
+                self._ari_display_toggle,
+                width=280,
+            ),
+            pn.Column(
+                pn.pane.Markdown("**Status**"),
+                self._gtf_status,
+                sizing_mode="stretch_width",
+            ),
+            styles={
+                "background": "#fff3e0",
+                "border-radius": "8px",
+                "padding": "10px 14px",
+                "align-items": "flex-start",
+                "gap": "24px",
+            },
+        )
+
         return pn.template.BootstrapTemplate(
             title="MRMS QPE Transposition Dashboard",
             main=[
                 pn.Column(
+                    gtf_controls,
                     ts_controls,
                     pn.Row(maps_and_ts, ctrl, fine_ws_box, margin=0,
                            styles={"gap": "8px", "align-items": "flex-start"}),

@@ -87,7 +87,7 @@ def fetch_rating_curve(site_no: str):
     stage_arr     = np.asarray(stages,     dtype=np.float64)
     discharge_arr = np.asarray(discharges, dtype=np.float64)
 
-    # Drop rows with negative discharge (artefacts from garbled or missing data)
+    # Drop rows with negative discharge (artifacts from garbled or missing data)
     valid = discharge_arr >= 0
     stage_arr, discharge_arr = stage_arr[valid], discharge_arr[valid]
 
