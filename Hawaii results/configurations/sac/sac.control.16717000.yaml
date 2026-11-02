@@ -12,7 +12,7 @@ model:
     size: 1
   parameter_type: json
   parameters:
-    path: ../configurations/sac/sac_params_16717000.json
+    path: ../configurations/sac/sac_params_16717000_cal.json
   forcing_type: csv
   forcing:
   - name: '16717000'
