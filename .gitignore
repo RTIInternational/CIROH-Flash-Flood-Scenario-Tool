@@ -1,3 +1,7 @@
+# Environment variables
+.env
+.env.local
+
 # Python
 __pycache__/
 *.py[cod]
@@ -10,31 +14,28 @@ build/
 # Jupyter
 .ipynb_checkpoints/
 
-# Large MRMS / NetCDF data files (download via download_mrms_hawaii.py)
-data/MRMS/
-data/GIS/
+# Large MRMS / NetCDF data files (download via download_mrms.py)
+precip_data/MRMS/
+precip_data/
 *.nc
 *.grib
 *.grib2
 *.grb2
 
 # Large simulation output files and oversized geometry parquet (store/share separately)
-Hawaii results/output_sac_*.csv
-Hawaii results/output_uhg_*.csv
-Hawaii results/output/*/output_sac_*.csv
-Hawaii results/output/*/output_uhg_*.csv
-Hawaii results/usgs_basin_geometry_with_source_all.parquet
-
-# Raw observations and model output from hydro-model-config (large, not needed)
-hydro-model-config/hawaii/hawaii/data/output/
-hydro-model-config/hawaii/hawaii/data/observations/
-hydro-model-config/hawaii/hawaii/pyMARRMot_input/
+Hawaii results/
+hydro-model-config/
+**/output_sac_*.csv
+**/output_uhg_*.csv
+regions/*/GIS/usgs_basin_geometry_with_source_all.parquet
+regions/*/hydro_model/calibration_results/diagnostics/pyMARRMot_input/
 
 # Windows shortcut files
 *.lnk
 
 # Unrelated project files
-"CIROH Literature Review.pptx"
+*.pptx
+CIROH Literature Review.pptx
 nws-hydro-models/
 
 # OS

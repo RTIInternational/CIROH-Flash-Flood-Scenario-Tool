@@ -1,6 +1,6 @@
 # CIROH Flash Flood Scenario Tool
 
-An interactive dashboard for exploring **MRMS (Multi-Radar/Multi-Sensor) QPE** precipitation grids over Hawaii and assessing the flood potential of alternative storm scenarios using the **SAC-SMA hydrological model**.
+An interactive dashboard for exploring **MRMS (Multi-Radar/Multi-Sensor) QPE** precipitation grids across regional domains (e.g., Hawaii, Vermont, North Carolina) and assessing the flood potential of alternative storm scenarios using the **SAC-SMA hydrological model**.
 
 Developed by RTI International as part of the CIROH Flash Flood Forecasting project.
 
@@ -26,41 +26,61 @@ This tool provides a browser-based dashboard that lets analysts:
 
 ```
 CIROH Flash Flooding/          ← project root
-├── code/
-│   ├── dashboard_mrms.py      # Main dashboard application (Panel + HoloViews)
-│   ├── dashboard_mrms_ens.py  # Same dashboard + ensemble (uncertainty) mode
-│   ├── sac_worker.py          # SAC-SMA + UHG worker (runs in hydro-model env)
-│   ├── sac_worker_ens.py      # Worker with optional ensemble mode
-│   ├── ens_core.py            # Ensemble sampling + driver (numpy only)
+├── .env.example               # Template for environment configuration
+│
+├── regions/                   # Self-contained regional assets (GIS, forcing, parameters)
+│   ├── template/              # Starter template for onboarding new states (e.g., VT, NC)
+│   │   └── config.json
+│   └── hawaii/
+│       ├── config.json        # Hawaii domain profile (bounds, ref_lat, MRMS product, paths)
+│       ├── GIS/               # Spatial boundary shapefiles, basins, and USGS gauge locations
+│       │   ├── Coastline.shp
+│       │   ├── usgs_basin_geometry_with_source_HI.shp
+│       │   └── usgs_lt500_min2014-2024.parquet
+│       └── hydro_model/       # SAC-SMA + Unit Hydrograph hydrologic assets
+│           ├── forcing/       # Hourly forcing CSVs: forcing.sac.<basin>.csv
+│           ├── parameters/    # Calibrated parameter JSONs (sac/ and unithg/)
+│           │   ├── sac/       # Files that end in "hf.json" are for hydrofabric scale
+│           │   └── unithg/
+│           ├── control_templates/ # sac.control.template.yaml & uhg.control.template.yaml
+│           └── calibration_results/ # outputs/ (best_params_*.csv) & diagnostics/
+│
+├── precip_data/               # Gridded precipitation datasets
+│   └── MRMS/                  # 1-hour MRMS QPE NetCDF files
+│
+├── src/
+│   ├── dashboard.py           # Unified dashboard application (deterministic + ensemble)
+│   ├── sac_worker.py          # Unified SAC-SMA + UHG worker (deterministic + ensemble)
+│   ├── ens_core.py            # Latin hypercube sampling and ensemble engine (numpy only)
 │   ├── ens_ui.py              # Ensemble controls and plots (Panel / Bokeh)
-│   ├── ens_helpers.py         # Early ensemble prototype (used only by test_nhru.py)
-│   ├── apply_ens_patch.py     # One-time helper that generated dashboard_mrms_ens.py
-│   ├── test_scripts/          # Ensemble verification scripts (see Testing)
-│   ├── dashboard_test.ipynb   # Notebook launcher for the dashboard
-│   ├── download_mrms_hawaii.py
-│   └── requirements.txt
+│   ├── region_config.py       # Region profile and environment variable loader
+│   ├── download_mrms.py       # Generalized multi-region MRMS QPE downloader
+│   └── utils.py               # USGS NWIS rating curves and discharge-to-stage
 │
-├── hydro-model-config/hawaii/hawaii/
-│   ├── configurations/
-│   │   ├── sac/               # SAC-SMA control YAML templates
-│   │   └── unithg/            # UHG control YAMLs and parameter JSONs
-│   ├── data/forcing/          # Hourly forcing CSVs (precip + PET per basin)
-│   └── notebooks/             # SAC-SMA calibration workflow notebooks
+├── notebooks/                 # Organized workflows and calibration
+│   ├── exploration/           # Interactive dashboard launcher & data exploration
+│   │   ├── dashboard_test.ipynb
+│   │   ├── get_top_events.ipynb
+│   │   ├── hydrofabric_test.ipynb
+│   │   └── mrms_processing.ipynb
+│   └── calibration/           # SAC-SMA calibration notebooks (01 to 06)
+│       ├── 01_setup_config_files.ipynb
+│       ├── 05_optimize_sac_all_basins.ipynb
+│       └── 06_view_opt_results_all_basins.ipynb
 │
-└── Hawaii results/
-    ├── configurations/
-    │   ├── sac/               # Calibrated SAC parameters (*_cal.json)
-    │   └── unithg/            # UHG parameter JSONs and control YAMLs
-    ├── output/basin_{id}/     # Calibration results (best_params CSV per basin)
-    ├── usgs_lt500_min2014-2024.parquet        # USGS gauge locations
-    └── usgs_basin_geometry_with_source_all.parquet  # Watershed geometries*
+├── tests/                     # Unit and integration test scripts
+│   ├── test_worker_ens.py     # Worker regression and ensemble validation
+│   ├── test_inplace.py        # In-place parameter mutation checks
+│   └── test_nhru.py           # Multi-HRU execution test
+│
+└── requirements.txt           # Dashboard environment dependencies
 ```
 
 > **\* Large file note:** `usgs_basin_geometry_with_source_all.parquet` (125 MB) exceeds
-> GitHub's per-file limit and is not tracked in this repository. Obtain it from the
-> project shared drive and place it at the path expected by `HAWAII_RESULTS_DIR` in
-> `dashboard_mrms.py`. Without it the watershed overlay will be disabled but the
-> dashboard will still load and display MRMS QPE.
+> GitHub's per-file limit and is git-ignored. If present in `regions/hawaii/GIS/`,
+> the dashboard will load it; if absent, the tool automatically falls back to the shapefile in
+> `regions/hawaii/GIS/usgs_basin_geometry_with_source_HI.shp` so the watershed overlay
+> continues to work out-of-the-box.
 
 ---
 
@@ -86,47 +106,59 @@ pip install -r requirements.txt
 Or with conda:
 
 ```bash
-conda create -n dashboard python=3.11
-conda activate dashboard
+conda create -n scenario_tool python=3.11
+conda activate scenario_tool
 pip install -r requirements.txt
 ```
 
 ---
 
-## Configuration
+## Configuration & Environment Setup
 
-Several **absolute paths are hardcoded** in the dashboard (`dashboard_mrms.py` / `dashboard_mrms_ens.py`) and the worker (`sac_worker.py` / `sac_worker_ens.py`) and must be updated to match your local environment before running:
+Paths and environment settings are dynamically managed and do not require editing Python source files.
 
-| Variable | File | Description |
-|---|---|---|
-| `_HYDRO_MODEL_PY` | `dashboard_mrms.py`, `dashboard_mrms_ens.py` | Path to `python.exe` in the `hydro-model` conda env |
-| `HAWAII_RESULTS_DIR` | dashboard files, worker files | Directory containing calibration outputs and configurations |
-| `HYDRO_MODEL_CONFIG_DIR` | dashboard files, worker files | Directory containing SAC/UHG YAML control files and forcing data |
-| `DEFAULT_NC` | dashboard files | Default MRMS NetCDF file to display on startup |
-| `DEFAULT_COASTLINE_SHP` | dashboard files | Path to Hawaii coastline shapefile |
-| `DEFAULT_ATLAS14_NC` | dashboard files | Path to NOAA Atlas 14 Hawaii NetCDF grid (`a14_hawaii.nc`) |
-| `_SAC_WORKER` | `dashboard_mrms.py`, `dashboard_mrms_ens.py` | Worker the dashboard launches (`sac_worker.py` in the original dashboard, `sac_worker_ens.py` in the ensemble dashboard) |
+### 1. Configure `.env`
 
-The ensemble worker imports `ens_core.py`, and the ensemble dashboard imports `ens_ui.py`; keep both in the same folder as the files that import them.
+Copy `.env.example` to `.env` in the repository root:
 
-### SAC-SMA calibration outputs
+```bash
+cp .env.example .env
+```
 
-The hydrological model integration expects a directory structure like:
+Set the path to your `hydro-model` Python interpreter:
+
+```ini
+HYDRO_MODEL_PY=C:\path\to\envs\hydro-model\python.exe
+ATLAS14_NC=C:\path\to\climatology\a14_hawaii.nc
+ACTIVE_REGION=hawaii
+```
+
+If not set, the tool will attempt to auto-discover standard conda environment locations before falling back to `sys.executable`.
+
+### 2. Region Profiles
+
+Regional bounds, MRMS products, and model directories are stored as modular JSON profiles in `regions/<region_name>/config.json`. 
+
+To run the tool for Hawaii or switch to a new region (e.g., Vermont or North Carolina), specify `--region <name>` when launching the dashboard, or set `ACTIVE_REGION=<name>` in `.env`.
+
+### Standardized Regional Asset Structure
+
+The hydrological model and dashboard dynamically load assets from a self-contained `regions/<state>/` directory:
 
 ```
-Hawaii results/
-├── configurations/
-│   ├── sac/
-│   │   ├── sac_params_{basin_id}_cal.json    # Calibrated parameters
-│   │   └── sac.control.{basin_id}.yaml       # SAC control template
-│   └── unithg/
-│       ├── uhg_params_{basin_id}.json
-│       └── uhg.control.{basin_id}.yaml
-├── output/
-│   └── basin_{basin_id}/
-│       └── best_params_{basin_id}_kge_q90.csv
-├── usgs_basin_geometry_with_source_all.parquet   # Watershed geometries
-└── usgs_lt500_min2014-2024.parquet               # USGS gauge locations
+regions/<state>/
+├── config.json                     # Region bounds, ref_lat, MRMS product, and path mappings
+├── GIS/                            # Boundaries (coastlines/state borders), basins, and gauges
+│   ├── Coastline.shp               # (or state/county borders)
+│   ├── usgs_basin_geometry_with_source_HI.shp
+│   └── usgs_lt500_min2014-2024.parquet
+└── hydro_model/                    # Hydrological modeling inputs and calibration
+    ├── forcing/                    # Hourly forcing CSVs: forcing.sac.<basin>.csv
+    ├── parameters/                 # Calibrated parameter JSONs (sac/ and unithg/)
+    │   ├── sac/
+    │   └── unithg/
+    ├── control_templates/          # sac.control.template.yaml & uhg.control.template.yaml
+    └── calibration_results/        # outputs/ (best_params_*.csv) & diagnostics/
 ```
 
 ---
@@ -135,16 +167,14 @@ Hawaii results/
 
 ### MRMS QPE files
 
-MRMS 1-hour QPE NetCDF files for Hawaii are expected in the format:
-
-```
-mrms_qpe_1hr_hawaii_YYYYMMDD_HHMM.nc
-```
-
-Use `download_mrms_hawaii.py` to fetch files for a target period:
+MRMS 1-hour QPE NetCDF files are saved into `precip_data/MRMS/` using `download_mrms.py`:
 
 ```bash
-python download_mrms_hawaii.py --start 2026-03-19 --end 2026-03-20 --output ./data/MRMS/
+# Download for Hawaii (default)
+python src/download_mrms.py --region hawaii --start 2026-03-19 --end 2026-03-20
+
+# Download for another configured region
+python src/download_mrms.py --region template --start 2026-03-19 --end 2026-03-20
 ```
 
 ---
@@ -153,20 +183,70 @@ python download_mrms_hawaii.py --start 2026-03-19 --end 2026-03-20 --output ./da
 
 ### Option 1 — Panel serve (recommended)
 
+Launch the unified dashboard:
+
 ```bash
-panel serve code/dashboard_mrms.py --show        # original dashboard (single deterministic run per scenario)
-panel serve code/dashboard_mrms_ens.py --show    # same dashboard plus ensemble (uncertainty) mode
+panel serve src/dashboard.py --show
 ```
 
-With a specific MRMS file and watershed shapefile:
+To target a specific region profile:
 
 ```bash
-panel serve code/dashboard_mrms.py --show --args path/to/mrms_file.nc path/to/watersheds.parquet
+panel serve src/dashboard.py --show --args --region hawaii
+```
+
+Or pass a specific MRMS file and watershed shapefile/parquet:
+
+```bash
+panel serve src/dashboard.py --show --args path/to/mrms_file.nc path/to/watersheds.parquet
 ```
 
 ### Option 2 — Jupyter notebook
 
-Open `dashboard_test.ipynb` and run the first cell. The dashboard will launch in a browser tab at `http://localhost:5006`. The notebook imports the ensemble dashboard (`dashboard_mrms_ens`).
+Open `notebooks/exploration/dashboard_test.ipynb` and run the first cell. The dashboard will launch in a browser tab at `http://localhost:5006`.
+
+---
+
+## Onboarding a New Region (e.g., Vermont or North Carolina)
+
+To adapt the tool to a new state or geographic domain:
+
+1. **Create the State Folder Structure:**
+   ```bash
+   mkdir -p regions/<state>/GIS
+   mkdir -p regions/<state>/hydro_model/{forcing,parameters/sac,parameters/unithg,control_templates,calibration_results}
+   ```
+2. **Add Watershed & Gauge Data:**
+   - Place watershed boundary shapefiles or GeoParquet under `regions/<state>/GIS/`.
+   - Place USGS gauge locations under `regions/<state>/GIS/`.
+   - (Optional) Place regional boundary outlines (e.g., state borders or coastlines) under `regions/<state>/GIS/`.
+3. **Add Forcing and Model Parameters:**
+   - Drop hourly precipitation and PET CSVs (`forcing.sac.<basin_id>.csv`) into `regions/<state>/hydro_model/forcing/`.
+   - Place calibrated parameter JSON files in `regions/<state>/hydro_model/parameters/sac/` and `parameters/unithg/`.
+   - Put your SAC control YAML template in `regions/<state>/hydro_model/control_templates/sac.control.template.yaml`.
+4. **Create a Region Profile:**
+   - Copy `regions/template/config.json` to `regions/<state>/config.json`.
+   - Update spatial bounds (`lat_min`, `lat_max`, `lon_min`, `lon_max`), reference latitude (`ref_lat`), center, and path mappings.
+5. **Download Precipitation Climatology:**
+   - Place the NOAA Atlas 14 / Atlas 15 NetCDF frequency grid for your domain and configure its path in `regions/<state>/config.json` or `.env`.
+6. **Launch:**
+   ```bash
+   panel serve code/dashboard.py --show --args --region <state>
+   ```
+   - (Optional) Place regional boundary outlines (e.g., state borders or coastlines) under `data/GIS/`.
+3. **Add Forcing and Model Parameters:**
+   - Drop hourly precipitation and PET CSVs (`forcing.sac.<basin_id>.csv`) into `regions/<state>/forcing/`.
+   - Place calibrated parameter JSON files in `regions/<state>/parameters/sac/` and `parameters/unithg/`.
+   - Put your SAC control YAML template in `regions/<state>/templates/sac.control.template.yaml`.
+4. **Create a Region Profile:**
+   - Copy `configs/regions/conus_sample.json` to `configs/regions/<state>.json`.
+   - Update spatial bounds (`lat_min`, `lat_max`, `lon_min`, `lon_max`), reference latitude (`ref_lat`), center, and path mappings.
+5. **Download Precipitation Climatology:**
+   - Place the NOAA Atlas 14 / Atlas 15 NetCDF frequency grid for your domain and configure its path in `configs/regions/<state>.json` or `.env`.
+6. **Launch:**
+   ```bash
+   panel serve code/dashboard.py --show --args --region <state>
+   ```
 
 ---
 
@@ -347,27 +427,34 @@ If the ensemble fails, the deterministic hydrographs are still returned along wi
 - Quantities are sampled independently and uniformly; parameter correlations from calibration are not represented.
 - The in-place parameter checks were run on one basin (16010000).
 
-### Ensemble files
+### Core files
 
 | File | Role |
 |---|---|
-| `dashboard_mrms_ens.py` | Dashboard with the ensemble panel, plots, and scaled timeout |
-| `sac_worker_ens.py` | Worker with the optional `ensemble` block |
-| `ens_core.py` | Latin hypercube sampling, saturation-to-state scaling, ensemble driver (numpy only, no pysacsnow import) |
+| `dashboard.py` | Unified dashboard application supporting deterministic and ensemble modes |
+| `sac_worker.py` | Unified worker supporting deterministic and optional ensemble execution |
+| `ens_core.py` | Latin hypercube sampling, saturation-to-state scaling, ensemble driver (numpy only) |
 | `ens_ui.py` | Ensemble controls, summary table, band and scatter plots |
-| `apply_ens_patch.py` | One-time helper that wrote `dashboard_mrms_ens.py` from `dashboard_mrms.py`; not needed to run the dashboard |
-| `ens_helpers.py` | Early sampling prototype, now superseded by `ens_core.py` |
+| `region_config.py` | Dynamic path resolution and region profile loader |
+| `download_mrms.py` | Region-agnostic MRMS QPE data downloader |
 
 ### Testing
 
-Run these in the `hydro-model` environment from the folder that contains the modules they import.
+Run test scripts from the repository root in the `hydro-model` environment:
 
-| Script | Verifies |
-|---|---|
-| `test_inplace.py` | Which parameters, and the unit-hydrograph ordinates, can be edited in place and still match a freshly built model. Prints the lines to paste into `sac_worker_ens.py`. `--uhg-only` checks only the unit hydrograph |
-| `test_nhru.py` | Exploration of running members as separate HRUs, plus per-member loop timing |
-| `test_worker_ens.py` | End-to-end check of `sac_worker_ens.py`, run as a subprocess like the dashboard does: bands are ordered, the deterministic hydrographs are unchanged by the ensemble, a no-perturbation ensemble reproduces the deterministic run; prints timing and peak spread for 60, 120 and 250 mm synthetic storms. Refuses to run against a worker whose `WORKER_VERSION` stamp does not match |
-| `test_worker_ensemble.py` | Earlier version of the same end-to-end test, written for `sac_worker.py` |
+```bash
+# Run worker ensemble and deterministic end-to-end regression test:
+python tests/test_worker_ens.py 16010000 50
+
+# Check in-place parameter compatibility:
+python tests/test_inplace.py
+```
+
+| Script | Location | Verifies |
+|---|---|---|
+| `test_worker_ens.py` | `tests/` | End-to-end check of `sac_worker.py`, run as a subprocess like the dashboard does: bands are ordered, deterministic hydrographs are unchanged by the ensemble, and no-perturbation reproduces deterministic runs. |
+| `test_inplace.py` | `tests/` | Checks which parameters and unit-hydrograph ordinates can be edited in place and match a freshly built model. |
+| `test_nhru.py` | `tests/` | Exploration of running members as separate HRUs, plus per-member loop timing. |
 
 ---
 

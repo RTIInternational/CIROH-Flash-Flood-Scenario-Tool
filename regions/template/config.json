@@ -1,0 +1,33 @@
+{
+  "region_id": "template",
+  "name": "Region Template (e.g. Vermont or North Carolina)",
+  "description": "Template configuration for onboarding a new state or regional domain.",
+  "bounds": {
+    "lat_min": 42.7,
+    "lat_max": 45.1,
+    "lon_min": -73.5,
+    "lon_max": -71.5
+  },
+  "ref_lat": 44.0,
+  "center": [44.0, -72.5],
+  "default_zoom": 8,
+  "paths": {
+    "mrms_dir": "precip_data/MRMS/template",
+    "default_nc": null,
+    "boundary_shp": "regions/template/GIS/state_boundary.shp",
+    "watershed_parquet": "regions/template/GIS/basins.parquet",
+    "watershed_shp_fallback": "regions/template/GIS/basins.shp",
+    "gauge_parquet": "regions/template/GIS/gauges.parquet",
+    "atlas14_nc": "precip_data/climatology/a14_template.nc",
+    "sac_params_dir": "regions/template/hydro_model/parameters/sac",
+    "uhg_params_dir": "regions/template/hydro_model/parameters/unithg",
+    "forcing_dir": "regions/template/hydro_model/forcing",
+    "sac_ctrl_template": "regions/template/hydro_model/control_templates/sac.control.template.yaml",
+    "calibrated_basins_dir": "regions/template/hydro_model/calibration_results/outputs"
+  },
+  "mrms": {
+    "aws_bucket": "noaa-mrms-pds",
+    "aws_region": "CONUS",
+    "file_prefix": "mrms_qpe_1hr_template_"
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "region_id": "hawaii",
+  "name": "Hawaii",
+  "description": "Hawaii domain covering major islands with calibrated USGS basins and Atlas 14 Vol 4 climatology.",
+  "bounds": {
+    "lat_min": 18.0,
+    "lat_max": 23.0,
+    "lon_min": -161.0,
+    "lon_max": -154.0
+  },
+  "ref_lat": 20.5,
+  "center": [20.5, -157.5],
+  "default_zoom": 8,
+  "paths": {
+    "mrms_dir": "precip_data/MRMS",
+    "default_nc": "precip_data/MRMS/mrms_qpe_1hr_hawaii_20260320_1200.nc",
+    "boundary_shp": "regions/hawaii/GIS/Coastline.shp",
+    "watershed_parquet": "regions/hawaii/GIS/usgs_basin_geometry_with_source_all.parquet",
+    "watershed_shp_fallback": "regions/hawaii/GIS/usgs_basin_geometry_with_source_HI.shp",
+    "gauge_parquet": "regions/hawaii/GIS/usgs_lt500_min2014-2024.parquet",
+    "atlas14_nc": "D:/Capstone Project/Precip_Grids/Atlas_14/a14_hawaii.nc",
+    "sac_params_dir": "regions/hawaii/hydro_model/parameters/sac",
+    "uhg_params_dir": "regions/hawaii/hydro_model/parameters/unithg",
+    "forcing_dir": "regions/hawaii/hydro_model/forcing",
+    "sac_ctrl_template": "regions/hawaii/hydro_model/control_templates/sac.control.template.yaml",
+    "calibrated_basins_dir": "regions/hawaii/hydro_model/calibration_results/outputs"
+  },
+  "mrms": {
+    "aws_bucket": "noaa-mrms-pds",
+    "aws_region": "HAWAII",
+    "file_prefix": "mrms_qpe_1hr_hawaii_"
+  }
+}
