@@ -1,0 +1,61 @@
+{
+  "schema_version": 3,
+  "usgs_id": "16103000",
+  "region": "hawaii",
+  "source_hydrofabric": "/home/apreucil/HI_example/data/geospatial/gpkgs/hi_usgs-16103000.gpkg",
+  "source_size_bytes": 1789952,
+  "source_modified_ns": 1792763271073580471,
+  "created_at_utc": "2026-10-26T13:38:29.516027+00:00",
+  "routing_timestep_seconds": 300,
+  "layers": [
+    "divides",
+    "flowpath-attributes",
+    "flowpaths",
+    "nexus"
+  ],
+  "reach_count": 6,
+  "nexus_count": 4,
+  "outlet_reach_ids": [
+    "wb-3601",
+    "wb-3583",
+    "wb-3659",
+    "wb-3382"
+  ],
+  "outlet_nexus_ids": [
+    "tnx-1000000117",
+    "nex-3383"
+  ],
+  "outlet_reaches_by_nexus": {
+    "tnx-1000000117": [
+      "wb-3601"
+    ],
+    "nex-3383": [
+      "wb-3583",
+      "wb-3659",
+      "wb-3382"
+    ]
+  },
+  "units": {
+    "area": "km2",
+    "length": "m",
+    "stage": "m",
+    "discharge": "m3/s",
+    "muskingum_k": "hours",
+    "tci": "mm/model_timestep"
+  },
+  "network_file": "network.parquet",
+  "rating_curves_file": "rating_curves.parquet",
+  "geometry_repairs": {
+    "area_missing_or_nonpositive": 0,
+    "length_from_lengthkm": 0,
+    "bankfull_depth_defaulted": 6,
+    "mannings_n_defaulted": 0,
+    "bottom_width_floored": 0,
+    "top_width_defaulted": 0,
+    "bed_slope_floored": 0,
+    "side_slope_defaulted": 0
+  },
+  "attribute_source_counts": {
+    "flowpath-attributes": 6
+  }
+}
